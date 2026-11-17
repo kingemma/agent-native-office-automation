@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  局域网部署通常是 http://192.168.x.x:8787，iOS/macOS 默认的 ATS 会直接拦截明文请求。
+  这里放开 arbitrary loads + 本地网络，Tauri 会把它与默认 Info.plist 合并。
+  如果只走 https 外网，可删掉 NSAllowsArbitraryLoads 仅保留 NSAllowsLocalNetworking。
+-->
+<plist version="1.0">
+<dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>

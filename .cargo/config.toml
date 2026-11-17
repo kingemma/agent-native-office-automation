@@ -1,0 +1,5 @@
+# MinGW ld 链接 Tauri 的 cdylib（liboa_app_lib.dll）时会默认自动导出所有全局符号，
+# 本项目符号量超过 65535 导致 `ld: export ordinal too large`。
+# 关闭自动导出，只保留 rustc 传入的 .def 显式导出列表。
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--exclude-all-symbols"]

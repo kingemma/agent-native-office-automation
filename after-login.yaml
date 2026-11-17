@@ -1,0 +1,212 @@
+- generic [ref=e90]:
+  - complementary [ref=e91]:
+    - generic [ref=e100]:
+      - generic [ref=e101]: 驭工 OA
+      - generic [ref=e102]: AGENT-NATIVE OA
+    - navigation [ref=e103]:
+      - generic [ref=e104]: 概览
+      - generic "工作台" [ref=e105] [cursor=pointer]
+      - generic [ref=e113]: 业务模块
+      - generic "人事管理" [ref=e114] [cursor=pointer]
+      - generic "财务管理" [ref=e122] [cursor=pointer]: "3"
+      - generic "合同管理" [ref=e128] [cursor=pointer]
+      - generic "考勤打卡" [ref=e134] [cursor=pointer]
+      - generic "资产管理" [ref=e140] [cursor=pointer]
+      - generic [ref=e146]: 智能中枢
+      - generic "Agent 工作台" [ref=e147] [cursor=pointer]
+      - generic [ref=e155]: 系统
+      - generic "系统架构" [ref=e156] [cursor=pointer]
+    - generic [ref=e162]: v0.9.0 · Rig 0.46 · Tauri 2.0
+  - generic [ref=e163]:
+    - banner [ref=e164]:
+      - button "收起侧栏" [ref=e165] [cursor=pointer]
+      - generic [ref=e172]:
+        - generic [ref=e173]: 工作台
+        - generic [ref=e174]: 驭工 OA / 工作台
+      - textbox "全局搜索 / 唤起 Agent…" [ref=e180]
+      - generic [ref=e181]: "运行态: http"
+      - button "EN" [ref=e182] [cursor=pointer]
+      - button "通知" [ref=e184] [cursor=pointer]
+      - button "唤起 Agent" [ref=e190] [cursor=pointer]
+      - generic [ref=e196] [cursor=pointer]:
+        - generic [ref=e197]: E
+        - generic [ref=e198]: Evan
+        - generic [ref=e199]: 管理员
+    - main [ref=e200]:
+      - generic [ref=e201]:
+        - generic [ref=e202]:
+          - generic [ref=e203]:
+            - heading "工作台" [level=1] [ref=e204]
+            - paragraph [ref=e205]: 早上好，Evan。这是组织今天的运行概览，所有模块均可由 Agent 直接驱动。
+          - generic [ref=e206]:
+            - button "刷新" [ref=e207] [cursor=pointer]
+            - button "重置" [ref=e215] [cursor=pointer]
+            - button "打开 Agent 工作台" [ref=e220] [cursor=pointer]
+        - generic [ref=e228]:
+          - generic [ref=e229]:
+            - generic [ref=e237]: 在职员工
+            - generic [ref=e239]:
+              - generic [ref=e240]: "16"
+              - generic [ref=e242]: 人
+            - generic [ref=e243]: 本月新增
+          - generic [ref=e244]:
+            - generic [ref=e250]: 待我审批
+            - generic [ref=e252]:
+              - generic [ref=e253]: "3"
+              - generic [ref=e255]: 条记录
+            - generic [ref=e256]: 需处理
+          - generic [ref=e257]:
+            - generic [ref=e263]: 生效合同
+            - generic [ref=e265]:
+              - generic [ref=e266]: "2"
+              - generic [ref=e268]: 条记录
+            - generic [ref=e269]: 30 天内到期
+          - generic [ref=e270]:
+            - generic [ref=e276]: 今日出勤率
+            - generic [ref=e277]: 67%
+            - generic [ref=e280]: 准时打卡
+          - generic [ref=e281]:
+            - generic [ref=e287]: 在用资产
+            - generic [ref=e288]: ¥7.7万
+            - generic [ref=e291]: 资产原值
+          - generic [ref=e292]:
+            - generic [ref=e297]: 本月报销总额
+            - generic [ref=e298]: ¥4.7万
+            - generic [ref=e301]: 预算执行 70%
+        - generic [ref=e302]:
+          - generic [ref=e303]:
+            - generic [ref=e305]:
+              - generic [ref=e306]: 费用趋势
+              - generic [ref=e308]:
+                - generic [ref=e309]: 报销
+                - generic [ref=e311]: 人力成本
+            - generic [ref=e314]:
+              - generic [ref=e315]:
+                - generic [ref=e316]:
+                  - generic [ref=e317]:
+                    - generic "报销 0" [ref=e318]
+                    - generic "人力成本 0" [ref=e319]
+                  - generic [ref=e320]: "1"
+                - generic [ref=e321]:
+                  - generic [ref=e322]:
+                    - generic "报销 0" [ref=e323]
+                    - generic "人力成本 0" [ref=e324]
+                  - generic [ref=e325]: "2"
+                - generic [ref=e326]:
+                  - generic [ref=e327]:
+                    - generic "报销 0" [ref=e328]
+                    - generic "人力成本 0" [ref=e329]
+                  - generic [ref=e330]: "3"
+                - generic [ref=e331]:
+                  - generic [ref=e332]:
+                    - generic "报销 0" [ref=e333]
+                    - generic "人力成本 0" [ref=e334]
+                  - generic [ref=e335]: "4"
+                - generic [ref=e336]:
+                  - generic [ref=e337]:
+                    - generic "报销 1980000" [ref=e338]
+                    - generic "人力成本 1980000" [ref=e339]
+                  - generic [ref=e340]: "5"
+                - generic [ref=e341]:
+                  - generic [ref=e342]:
+                    - generic "报销 2898600" [ref=e343]
+                    - generic "人力成本 2898600" [ref=e344]
+                  - generic [ref=e345]: "6"
+              - generic [ref=e346]: 近 6 个月 · 单位：万元
+          - generic [ref=e347]:
+            - generic [ref=e348]: 预算执行
+            - generic [ref=e351]:
+              - paragraph [ref=e352]: 年度费用预算
+              - generic [ref=e353]:
+                - generic [ref=e354]: 已使用 ¥842,600
+                - generic [ref=e355]: 剩余 ¥357,400
+              - progressbar [ref=e356]:
+                - generic "70%" [ref=e360]
+              - generic [ref=e361]: 70% · ¥1,200,000 执行率
+              - separator [ref=e362]
+              - generic [ref=e363]: 报销类型分布 · 本月累计
+              - generic [ref=e364]:
+                - generic [ref=e366]: 日常报销
+                - generic [ref=e367]: ¥0
+              - generic [ref=e368]:
+                - generic [ref=e370]: 商务报销
+                - generic [ref=e371]: ¥0
+              - generic [ref=e372]:
+                - generic [ref=e374]: 项目实施报销
+                - generic [ref=e375]: ¥0
+        - generic [ref=e376]:
+          - generic [ref=e377]:
+            - generic [ref=e379]:
+              - generic [ref=e380]: 待办审批
+              - button "查看全部" [ref=e382] [cursor=pointer]
+            - list [ref=e385]:
+              - listitem [ref=e386]:
+                - generic [ref=e388]:
+                  - generic [ref=e389]: BX-2026-0048 · 上海客户拜访差旅（高铁+住宿） · ¥3,280
+                  - generic [ref=e390]: — · st.— · E08
+                - generic [ref=e391]:
+                  - button "通 过" [ref=e392] [cursor=pointer]
+                  - button "驳 回" [ref=e394] [cursor=pointer]
+              - listitem [ref=e396]:
+                - generic [ref=e398]:
+                  - generic [ref=e399]: BX-2026-0047 · 恒信科技项目现场实施差旅与耗材 · ¥12,600
+                  - generic [ref=e400]: — · st.— · E14
+                - generic [ref=e401]:
+                  - button "通 过" [ref=e402] [cursor=pointer]
+                  - button "驳 回" [ref=e404] [cursor=pointer]
+              - listitem [ref=e406]:
+                - generic [ref=e408]:
+                  - generic [ref=e409]: BX-2026-0046 · 办公用品与打印耗材 · ¥486
+                  - generic [ref=e410]: — · st.— · E07
+                - generic [ref=e411]:
+                  - button "通 过" [ref=e412] [cursor=pointer]
+                  - button "驳 回" [ref=e414] [cursor=pointer]
+          - generic [ref=e416]:
+            - generic [ref=e418]:
+              - generic [ref=e419]: Agent 最近活动
+              - generic [ref=e420]: 工具调用审计日志
+            - list [ref=e422]:
+              - listitem [ref=e423]:
+                - generic [ref=e425]:
+                  - generic [ref=e426]: "{\"expiring_in_days\":30}"
+                  - generic [ref=e427]:
+                    - code [ref=e428]: contract.query
+                    - text: · E01 · 2026-11-17 03:29:20
+              - listitem [ref=e429]:
+                - generic [ref=e431]:
+                  - generic [ref=e432]: "{\"asset_id\":\"AST-0002\"}"
+                  - generic [ref=e433]:
+                    - code [ref=e434]: asset.return
+                    - text: · Agent · 2026-11-17 02:46:40
+              - listitem [ref=e435]:
+                - generic [ref=e437]:
+                  - generic [ref=e438]: "{\"amount_cents\":328000}"
+                  - generic [ref=e439]:
+                    - code [ref=e440]: finance.claim.create
+                    - text: · Agent · 2026-11-17 02:46:40
+              - listitem [ref=e441]:
+                - generic [ref=e443]:
+                  - generic [ref=e444]: "{\"name\":\"张伟\"}"
+                  - generic [ref=e445]:
+                    - code [ref=e446]: hr.onboard
+                    - text: · Agent · 2026-11-17 02:46:40
+        - alert [ref=e447]:
+          - img "exclamation-circle" [ref=e448]
+          - generic [ref=e452]:
+            - generic [ref=e453]: 到期预警
+            - generic [ref=e454]:
+              - text: 以下合同将在 30 天内到期，建议由 Agent 发起续签流程。
+              - code [ref=e455]: HT-2026-017 2026-12-07
+              - code [ref=e456]: HT-2026-014 2026-12-04
+        - generic [ref=e457]:
+          - generic [ref=e459]:
+            - generic [ref=e460]: 试试让 Agent 帮你做事
+            - generic [ref=e461]: 点击任意指令，观察 Agent 如何跨模块编排并完成写入
+          - generic [ref=e463]:
+            - button "人事 · 查询花名册" [ref=e464] [cursor=pointer]
+            - button "财务 · 商务报销" [ref=e471] [cursor=pointer]
+            - button "合同 · 到期预警" [ref=e475] [cursor=pointer]
+            - button "考勤 · 上班打卡" [ref=e480] [cursor=pointer]
+            - button "资产 · 资产领用" [ref=e485] [cursor=pointer]
+            - button "综合洞察 · 组织架构" [ref=e490] [cursor=pointer]
+            - button "打开 Agent 工作台" [ref=e495] [cursor=pointer]

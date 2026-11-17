@@ -1,0 +1,32 @@
+[package]
+name = "oa-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# 默认用系统原生 TLS：Windows=Schannel / macOS=Security.framework / Linux=OpenSSL，
+# 纯 Rust 绑定，不需要 C 编译器即可构建（本仓库的 CI/本地检查依赖这一点）。
+# 生产若要求统一的证书策略，可改：--no-default-features --features rustls
+# （rustls 0.23 → aws-lc-rs → aws-lc-sys，需要能编译 C 的 MinGW/MSVC 工具链）。
+default = ["native-tls"]
+native-tls = ["rig/native-tls"]
+rustls = ["rig/rustls"]
+
+[dependencies]
+# Rig 0.46 facade crate：提供 AgentBuilder / Agent / Tool / Hook / 多模型路由
+# （rig-core 0.46 只是底层契约 crate，Agent 运行时在 facade 中）。
+# 关闭 default-features 是为了不启用 rig 默认的 rustls 后端；TLS 由上面的 feature 选择。
+rig = { version = "0.46", default-features = false, features = ["agent", "derive", "reqwest"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+regex = "1"
+# 双后端：SQLite（桌面/测试）+ Postgres（多实例服务端），同一套仓储接口
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "sqlite"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+async-trait = "0.1"
+futures = "0.3"
+# 密码摘要（纯 Rust，无需 C 工具链；版本已在 tauri 依赖树中存在）
+sha2 = "0.10"
