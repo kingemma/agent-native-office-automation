@@ -1,0 +1,5 @@
+# Tauri CLI 在每次 dev/build 时会重写这两个 schema 文件。
+# 若让 git 做换行归一化（本机 core.autocrlf=true），重写后 stat 缓存失效，
+# `git status` 会长期显示 modified，但 `git diff` 为空——纯噪音。
+# 因此对生成物关闭文本转换，按工具写出的字节原样存储。
+src-tauri/gen/schemas/*.json -text
