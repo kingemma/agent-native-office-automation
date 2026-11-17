@@ -11,6 +11,7 @@
 # 前端
 node_modules/
 /frontend/dist/
+/frontend/.vite/
 
 # 临时诊断日志
 *.log
