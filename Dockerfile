@@ -16,8 +16,12 @@ WORKDIR /src
 # 先只拷清单，让依赖解析层尽可能命中缓存；源码放在后面
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# src-tauri 也是 workspace 成员：它的 [lib] name = "oa_app_lib" 要求 cargo 能看到 src/lib.rs，
+# 否则连 `-p oa-server` 都会在加载 workspace 时失败（can't find library `oa_app_lib`）。
+# 只带清单与源码，不装 webkit2gtk 等桌面依赖，oa-app 本身不参与编译。
 COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
 COPY src-tauri/build.rs ./src-tauri/build.rs
+COPY src-tauri/src ./src-tauri/src
 
 # 只构建 oa-server：workspace 里的 oa-app（Tauri）不会被编译，也就不需要 webkit2gtk 等系统库
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
