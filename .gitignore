@@ -26,6 +26,9 @@ node_modules/
 /.playwright-cli/
 /.workbuddy/
 
+# release 流水线运行时生成的合并配置（含证书指纹，不入库）
+/src-tauri/tauri.ci.conf.json
+
 # 系统文件
 .DS_Store
 Thumbs.db

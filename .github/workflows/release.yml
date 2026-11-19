@@ -1,0 +1,116 @@
+# 打 tag（或手动指定 tag）后产出对外发布物：
+#   1. 桌面安装包 MSI + NSIS setup.exe（带更新签名，供 updater 用）
+#   2. 服务端 oa-server.exe（客户端没有它跑不起来，必须同包发布）
+#   3. latest.json 更新清单
+# 产物先落成 draft Release，人工核对后再点 Publish——只有正式发布的 release
+# 才能被 releases/latest/download/latest.json 解析到，等于给更新留了一道人工闸门。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag，例如 v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows · 安装包 + 服务端
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag }}
+      # 更新包签名私钥：在仓库 Settings → Secrets 里配置，缺失时 tauri build 会在打包阶段失败
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 版本一致性校验
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/release-check.ps1 -Version $env:VERSION
+
+      # 没有证书时跳过，安装包不带签名（用户会看到 SmartScreen 拦截）
+      - name: 导入代码签名证书（可选）
+        if: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CERT_PWD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'oa-sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
+          $sec = ConvertTo-SecureString -String $env:CERT_PWD -Force -AsPlainText
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $sec | Out-Null
+          $cert = Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.HasPrivateKey } |
+            Sort-Object NotAfter -Descending | Select-Object -First 1
+          "CERT_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 打包桌面端
+        shell: pwsh
+        run: |
+          $config = 'src-tauri/tauri.updater.conf.json'
+          if ($env:CERT_THUMB) {
+            # 证书指纹只能从运行时拿到，因此把 update 产物开关和指纹合并成一份临时 overlay
+            $mergedConfig = 'src-tauri/tauri.ci.conf.json'
+            [ordered]@{
+              bundle = [ordered]@{
+                createUpdaterArtifacts = $true
+                windows = [ordered]@{ certificateThumbprint = $env:CERT_THUMB }
+              }
+            } | ConvertTo-Json -Depth 5 | Set-Content -Path $mergedConfig -Encoding utf8NoBOM
+            $config = $mergedConfig
+            Write-Host "已启用代码签名：$env:CERT_THUMB"
+          }
+          & frontend/node_modules/.bin/tauri.cmd build --config $config
+          if ($LASTEXITCODE -ne 0) { throw "tauri build 失败（exit $LASTEXITCODE）" }
+
+      - name: 构建服务端
+        run: cargo build --release --package oa-server
+
+      - name: 生成更新清单
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/make-updater-json.ps1 -Version $env:VERSION -Notes '详见 Release 说明'
+
+      - name: 发布到 GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $assets = @()
+          $assets += Get-ChildItem 'target/release/bundle/msi/*.msi' -ErrorAction SilentlyContinue
+          $assets += Get-ChildItem 'target/release/bundle/nsis/*-setup.exe' -ErrorAction SilentlyContinue
+          $assets += Get-Item 'target/release/bundle/latest.json'
+          $assets += Get-Item 'target/release/oa-server.exe'
+          $paths = $assets | ForEach-Object { $_.FullName }
+          if (-not $paths) { throw '没有找到任何待上传产物' }
+
+          gh release view $env:VERSION --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:VERSION --draft --title "驭工 OA $env:VERSION" `
+              --notes "客户端与服务端必须同版本。安装顺序：先部署 oa-server，再装桌面端。" $paths
+          } else {
+            gh release upload $env:VERSION $paths --clobber
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release 失败（exit $LASTEXITCODE）" }

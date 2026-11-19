@@ -1,0 +1,24 @@
+# 构建上下文只需要 workspace 清单 + 两个 crate；其余全部排除，镜像层更小也更快
+target/
+frontend/
+tools/
+
+# 运行期数据，绝不能进镜像
+oa.db
+oa.db-shm
+oa.db-wal
+oa-files/
+
+# 版本控制与本机状态
+.git/
+.gitignore
+.gitattributes
+.github/
+.workbuddy/
+.playwright-cli/
+.cargo/
+
+# 文档与诊断日志
+*.log
+*.md
+after-login.yaml

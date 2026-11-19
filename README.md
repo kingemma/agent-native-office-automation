@@ -286,6 +286,67 @@ npm --prefix frontend run build                # vue-tsc + 生产构建
 台账行级可见性、本人数据作用域、异步 Store 的并发自增、事务回滚、
 本地引擎多步编排与确认门禁、权限不足不写库、模型配置的提供商预设与 Key 掩码。
 
+## 发布
+
+发布物 = 桌面安装包（MSI + NSIS）+ 服务端可执行文件 + 更新清单 `latest.json`，三者版本必须一致。
+
+### 本地手动发布
+
+```powershell
+# 1. 三处版本号改齐（Cargo.toml / tauri.conf.json / package.json），然后自检
+pwsh -NoProfile -File .\tools\release-check.ps1 -Version v0.2.0
+
+# 2. 打安装包（overlay 打开更新产物，需要签名私钥）
+$env:TAURI_SIGNING_PRIVATE_KEY = 'C:\Users\<you>\.tauri\oa-updater.key'
+.\tools\tauri.ps1 build --config src-tauri/tauri.updater.conf.json
+
+# 3. 出服务端
+cargo build -p oa-server --release
+
+# 4. 生成更新清单
+pwsh -NoProfile -File .\tools\make-updater-json.ps1 -Version v0.2.0
+```
+
+产物在 `target\release\bundle\`（`msi\*.msi`、`nsis\*-setup.exe`、各自 `.sig`、`latest.json`）。
+`createUpdaterArtifacts` 只在 `src-tauri/tauri.updater.conf.json` 里打开，所以日常 `tauri.ps1 build`
+不需要私钥；一旦带上这个 overlay 却没有 `TAURI_SIGNING_PRIVATE_KEY`，打包会直接失败。
+
+### 自动发布（GitHub Actions）
+
+| 工作流 | 触发 | 干什么 |
+|---|---|---|
+| `ci.yml` | push main / PR | Rust `check` + `test`（Windows）、前端 `vue-tsc` + `vite build`、服务端镜像可构建 |
+| `release.yml` | 推 `v*` tag 或手动 | 版本一致性校验 → 打安装包（可选代码签名）→ 出 `oa-server.exe` → 生成 `latest.json` → 建 draft Release |
+| `docker.yml` | 推 `v*` tag 或手动 | 构建并推送 `ghcr.io/<owner>/<repo>/oa-server:{版本,latest}` |
+
+流程：改版本号 → 提交 → `git tag -a v0.2.0 -m "..."` → `git push origin v0.2.0` → 等 Actions 出 draft →
+人工核对后点 **Publish release**。只有正式发布的 release 才能被
+`releases/latest/download/latest.json` 命中，等于给自动更新留了人工闸门。
+
+需要配置的 Secrets：
+
+| Secret | 作用 | 是否必需 |
+|---|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | 更新包签名私钥（`~/.tauri/oa-updater.key` 的内容或其路径） | 必需 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥口令（生成时未设密码则留空） | 可选 |
+| `WINDOWS_CERTIFICATE_BASE64` | 代码签名证书 `.pfx` 的 base64 | 可选 |
+| `WINDOWS_CERTIFICATE_PASSWORD` | 证书口令 | 配了证书则必需 |
+
+公钥已写入 `tauri.conf.json` 的 `plugins.updater.pubkey`，它与私钥是一对。
+**私钥丢失 = 已有的客户端再也无法收到自动更新**（只能让用户手动重装新版本），务必离线备份。
+
+### 服务端部署
+
+```bash
+# 镜像：内容只有 oa-server，数据全部落在 /data
+docker run -d --name oa-server -p 8787:8787 -v oa-data:/data \
+  -e OA_INSTANCE=prod-1 ghcr.io/kingemma/agent-native-office-automation/oa-server:0.1.0
+```
+
+镜像内置 `HEALTHCHECK`（探 `/api/health`），首次启动自动建库并灌演示数据，
+**上线前必须改掉演示口令 `evan / oa123456`** 并清理演示数据（管理员调用 `POST /api/seed/reset`）。
+裸机部署则直接跑 `oa-server.exe`，用 `OA_DB` / `OA_FILES` / `OA_ADDR` 指到对应路径。
+
 ## 数据与安全
 
 - 金额统一「分」存储；日期统一 `YYYY-MM-DD`；单号由 `next_id` 递增生成（并发安全）。

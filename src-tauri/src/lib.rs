@@ -8,6 +8,9 @@
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // 更新包由 release 流水线用 TAURI_SIGNING_PRIVATE_KEY 签名，
+        // 公钥和清单地址写在 tauri.conf.json 的 plugins.updater 里
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

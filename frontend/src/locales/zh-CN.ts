@@ -185,6 +185,11 @@ export default {
     distTitle: '资产类别分布', searchPh: '搜索编号 / 型号 / 序列号 / 领用人',
     detailTitle: '资产卡片', inventory: '盘点', totalValue: '原值合计',
   },
+  update: {
+    title: '发现新版本 {version}',
+    desc: '将下载安装包并覆盖安装，完成后应用会自动重启。',
+    install: '立即更新', later: '稍后',
+  },
   attach: {
     title: '附件 / 发票图片', hint: 'PNG / JPG / WEBP / PDF，单个 ≤ 10 MB',
     add: '上传附件', empty: '还没有附件，可上传发票或扫描件', preview: '查看',

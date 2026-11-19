@@ -25,6 +25,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCMzRGMEU0Mjc2RjY3RTUKUldUbFoyOG41UEEwZTVHdWduRDhSNmgrY0kvYk00QUdJNk8xclRud0U5VS9ZQ2NrM0tmUjM1R0YK",
+      "endpoints": [
+        "https://github.com/kingemma/agent-native-office-automation/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

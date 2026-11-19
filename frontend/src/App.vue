@@ -5,7 +5,7 @@
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import Icon from './components/Icon.vue'
 import AgentWorkbench from './components/AgentWorkbench.vue'
 import LlmSettingsModal from './components/LlmSettingsModal.vue'
@@ -136,7 +136,33 @@ onMounted(async () => {
   await restoreAuth()
   applyDeepLink()
   await loadBadge()
+  void checkUpdate()
 })
+
+/**
+ * 桌面端启动后静默检查更新：浏览器模式没有 Tauri IPC，直接跳过。
+ * 离线 / 清单未发布 / 后端不可达都不该影响启动，因此整条链路失败只记日志。
+ */
+async function checkUpdate(): Promise<void> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater')
+    const update = await check()
+    if (!update) return
+    Modal.confirm({
+      title: t('update.title', { version: update.version }),
+      content: t('update.desc'),
+      okText: t('update.install'),
+      cancelText: t('update.later'),
+      onOk: async () => {
+        // Windows 上 downloadAndInstall 会调起 NSIS 安装包并自动重启进程
+        await update.downloadAndInstall()
+      },
+    })
+  } catch (e) {
+    console.warn('检查更新失败（不影响使用）', e)
+  }
+}
 
 function onKeydown(e: KeyboardEvent): void {
   if (!auth.user) return

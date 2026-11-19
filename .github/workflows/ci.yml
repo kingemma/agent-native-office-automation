@@ -1,0 +1,70 @@
+# 每次推 main / PR 都跑一遍：Rust 检查与单测、前端类型检查与构建、服务端镜像可构建。
+# Rust 任务放在 windows-latest，与本地开发环境一致（GNU 工具链差异由本地 tools/mingw-bin 负责，
+# CI 上用 MSVC 即可，因为 .cargo/config.toml 的 rustflags 只对 gnu 目标生效）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust · check + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend · typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # npm run build = vue-tsc --noEmit && vite build
+      - run: npm run build
+
+  docker:
+    name: Server image · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build oa-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: oa-server:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

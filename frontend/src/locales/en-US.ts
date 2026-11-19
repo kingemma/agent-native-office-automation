@@ -187,6 +187,11 @@ export default {
     distTitle: 'Assets by Category', searchPh: 'Search ID / model / SN / holder',
     detailTitle: 'Asset Card', inventory: 'Inventory', totalValue: 'Total Original Value',
   },
+  update: {
+    title: 'Version {version} is available',
+    desc: 'The installer will be downloaded and applied; the app restarts automatically.',
+    install: 'Update now', later: 'Later',
+  },
   attach: {
     title: 'Attachments & Invoices', hint: 'PNG / JPG / WEBP / PDF, up to 10 MB each',
     add: 'Upload', empty: 'No attachments yet — upload invoices or scans', preview: 'View',
