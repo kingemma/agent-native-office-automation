@@ -9,6 +9,24 @@
 - **客户端形态**：所有平台统一走 REST（无本地数据库、无 invoke 业务通道）；
   登录页配置「局域网 / 外网」两套地址，登录时探测局域网，不可达自动切外网
 
+## 界面预览
+
+| 登录（局域网 / 外网双地址） | 工作台 |
+|---|---|
+| ![登录](docs/screenshots/login.png) | ![工作台](docs/screenshots/dashboard.png) |
+
+**Agent 工作台**：左侧对话（思考过程可折叠，正文逐字流式输出），右侧实时工具轨迹与能力清单。
+
+![Agent 工作台](docs/screenshots/agent.png)
+
+| 人事管理 | 财务管理 |
+|---|---|
+| ![人事管理](docs/screenshots/hr.png) | ![财务管理](docs/screenshots/finance.png) |
+
+**系统架构**：技术选型、分层架构与 19 个工具的协议一览。
+
+![系统架构](docs/screenshots/architecture.png)
+
 ## 目录结构
 
 ```
@@ -22,6 +40,7 @@ tools/check.ps1       Windows 编译检查（自动注入 MinGW + GNU 工具链�
 tools/check.sh        同上的 bash 版（Git Bash / WSL）
 tools/smoke.ps1       REST 端点冒烟测试（25 项）
 tools/tauri.ps1       桌面/移动端开发与打包启动器
+docs/screenshots      README 用的界面截图
 ```
 
 ## 一键命令
