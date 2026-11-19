@@ -50,16 +50,29 @@ export interface PlanStep {
   args: Record<string, unknown>
 }
 
+/** 一步思考：stage = intent / plan / tool / guard / route / llm / done */
+export interface ThinkStep {
+  stage: string
+  text: string
+}
+
 /** POST /api/agent/chat 返回：回复 + 运行模式 + 工具轨迹 + 待确认的敏感步骤 */
 export interface AgentReply {
   reply: string
   mode: string
   trace: TraceStep[]
   plan?: PlanStep[]
+  thinking?: ThinkStep[]
   pending?: PlanStep | null
   affected?: string[]
   needs_confirmation?: boolean
 }
+
+/** GET /api/agent/stream 的 SSE 帧 */
+export type AgentEvent =
+  | { type: 'think'; stage: string; text: string }
+  | { type: 'reply'; reply: AgentReply }
+  | { type: 'error'; message: string }
 
 export interface AgentPlan {
   steps: PlanStep[]
@@ -271,6 +284,50 @@ export async function listTools(): Promise<ToolSpec[]> {
 /** 自然语言指令 → Agent 回复（本地意图引擎或 Rig LLM，由服务端模式决定） */
 export async function agentChat(message: string): Promise<AgentReply> {
   return httpPost<AgentReply>('/api/agent/chat', { message })
+}
+
+/**
+ * 流式对话：逐条读 SSE 帧并回调。
+ *
+ * 不用 `EventSource`——它无法携带 `Authorization: Bearer`，而本项目的登录态
+ * 全部走请求头、没有 cookie 会话；因此用 `fetch` 的 ReadableStream 手工拆帧。
+ */
+export async function agentStream(
+  message: string,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `${getBase()}/api/agent/stream?q=${encodeURIComponent(message)}`,
+    { headers: authHeaders(), signal },
+  )
+  if (res.status === 401) {
+    setToken('')
+    throw new Error('UNAUTHORIZED')
+  }
+  if (!res.ok || !res.body) throw new Error(`/api/agent/stream ${res.status}: ${await res.text()}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE 帧以空行分隔；本项目只发 data:，忽略 event:/id:/retry:
+    let cut = buffer.indexOf('\n\n')
+    while (cut >= 0) {
+      const frame = buffer.slice(0, cut)
+      buffer = buffer.slice(cut + 2)
+      const payload = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join('')
+      if (payload) onEvent(JSON.parse(payload) as AgentEvent)
+      cut = buffer.indexOf('\n\n')
+    }
+  }
 }
 
 /** 预览执行计划：只返回将要调用的工具与参数，不写库 */

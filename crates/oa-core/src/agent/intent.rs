@@ -30,6 +30,17 @@ pub struct TraceEntry {
     pub ok: bool,
 }
 
+/// 一步「思考」：阶段 + 人类可读说明。
+///
+/// 流式接口边执行边推给前端；非流式接口把它和回复一起返回，
+/// 保证两种调用方式看到的是同一份推理记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkStep {
+    /// intent / plan / tool / guard / route / done
+    pub stage: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReply {
     pub reply: String,
@@ -37,6 +48,9 @@ pub struct AgentReply {
     pub mode: String,
     pub trace: Vec<TraceEntry>,
     pub plan: Vec<PlanStep>,
+    /// 本次的思考过程（阶段 + 说明），前端在对话气泡里折叠展示
+    #[serde(default)]
+    pub thinking: Vec<ThinkStep>,
     /// 被敏感操作门禁拦下的那一步：前端确认后带 confirmed=true 直接重试此工具。
     #[serde(default)]
     pub pending: Option<PlanStep>,
@@ -54,6 +68,7 @@ impl AgentReply {
             mode: mode.to_string(),
             trace: vec![],
             plan: vec![],
+            thinking: vec![],
             pending: None,
             affected: vec![],
             needs_confirmation: false,
@@ -602,14 +617,36 @@ pub fn help_text(en: bool) -> String {
     }
 }
 
+/// 按字符截断，用于思考日志里展示原始输入而不刷屏
+fn brief(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let head: String = flat.chars().take(max).collect();
+    format!("{head}…")
+}
+
 /// 本地模式：执行计划 → 逐步调用工具 → 汇总回复与轨迹。
 /// 身份来自 `SessionUser`，工具内部的 RBAC 与审计都使用真实员工号。
 pub async fn run_local(state: AppState, user: &SessionUser, message: &str) -> Result<AgentReply> {
+    run_local_stream(state, user, message, super::Thinker::silent()).await
+}
+
+/// 同 [`run_local`]，但把每一步决策实时推给 `thinker`（流式接口用）。
+pub async fn run_local_stream(
+    state: AppState,
+    user: &SessionUser,
+    message: &str,
+    mut thinker: super::Thinker,
+) -> Result<AgentReply> {
     // 复制一份连接池句柄（Clone 只复制 Arc），避免与后续事务争用
     let mut store = state.store.clone();
+    thinker.say("intent", format!("解析指令：{}", brief(message, 60)));
     let steps = plan_for(&mut store, message, &user.employee_id).await?;
     let en = !has_han(message);
     if steps.is_empty() {
+        thinker.say("intent", "未命中任何业务流程，返回能力清单");
         let mut out = AgentReply::new(help_text(en), "local");
         out.reply.push_str(if en {
             "\n\nCurrent user: {display} ({role}); permissions are enforced server-side."
@@ -619,18 +656,39 @@ pub async fn run_local(state: AppState, user: &SessionUser, message: &str) -> Re
         .replace("{display}", &user.display_name)
         .replace("{role}", &user.role)
         .as_str());
+        out.thinking = thinker.steps();
         return Ok(out);
     }
+    let plan_line = steps.iter().map(|s| s.tool.as_str()).collect::<Vec<_>>().join(" → ");
+    thinker.say("plan", format!("规划 {} 步：{}", steps.len(), plan_line));
 
     let mut results: Vec<Value> = Vec::new();
     let mut trace: Vec<TraceEntry> = Vec::new();
     let mut pending: Option<PlanStep> = None;
     let mut affected: Vec<String> = Vec::new();
 
-    for step in &steps {
+    let total = steps.len();
+    for (index, step) in steps.iter().enumerate() {
         let args = resolve_args(&step.args, &results);
+        thinker.say(
+            "tool",
+            format!(
+                "第 {}/{} 步：调用 `{}`，参数 {}",
+                index + 1, total, step.tool,
+                brief(&args.to_string(), 120)
+            ),
+        );
         let result = tools::call(state.clone(), user, &step.tool, args.clone()).await;
         let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let outcome = result
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| result.get("error").and_then(Value::as_str))
+            .unwrap_or(if ok { "ok" } else { "failed" });
+        thinker.say(
+            "tool",
+            format!("`{}` {}：{}", step.tool, if ok { "成功" } else { "失败" }, brief(outcome, 100)),
+        );
         if ok {
             let domain = tools::spec_domain(&step.tool);
             if !domain.is_empty() && !affected.contains(&domain) {
@@ -643,6 +701,7 @@ pub async fn run_local(state: AppState, user: &SessionUser, message: &str) -> Re
             .unwrap_or(false)
         {
             pending = Some(PlanStep { tool: step.tool.clone(), args: args.clone() });
+            thinker.say("guard", format!("`{}` 属于敏感操作，暂停等待用户确认", step.tool));
         }
         trace.push(TraceEntry {
             tool: step.tool.clone(),
@@ -708,11 +767,22 @@ pub async fn run_local(state: AppState, user: &SessionUser, message: &str) -> Re
         });
     }
 
+    thinker.say(
+        "done",
+        match (pending.is_some(), denied) {
+            (true, _) => format!("执行 {} 步后暂停，等待确认", trace.len()),
+            (_, true) => format!("执行 {} 步，最后一步被权限拒绝", trace.len()),
+            _ => format!("执行 {} 步，变更已写入并审计", trace.len()),
+        },
+    );
+    let thinking = thinker.steps();
+
     Ok(AgentReply {
         reply,
         mode: "local".into(),
         trace,
         plan: steps,
+        thinking,
         needs_confirmation: pending.is_some(),
         pending,
         affected,

@@ -3,7 +3,7 @@
  * Agent 工作台：抽屉（compact=true）与全屏（compact=false）复用同一组件，
  * 且共享 store.ts 里的同一份响应式会话状态。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import { currentLocale } from '../i18n'
@@ -130,6 +130,14 @@ const planSteps = computed(() =>
 )
 const toolCount = computed(() => session.tools.length || TOOL_CATALOG.length)
 
+/** 思考块的折叠状态：默认展开，用户手动收起的才记下来 */
+const thinkClosed = reactive<Record<number, boolean>>({})
+function toggleThink(id: number): void {
+  thinkClosed[id] = !thinkClosed[id]
+}
+/** 有占位消息在流式接收时，不再额外显示单独的"思考中"气泡 */
+const hasStreaming = computed(() => session.messages.some((m) => m.streaming))
+
 function onQuick(item: { cmd: { zh: string; en: string } }): void {
   void sendAgent(L(item.cmd))
   draft.value = ''
@@ -167,6 +175,8 @@ function scrollChat(): void {
   })
 }
 watch([() => session.messages.length, () => session.running], scrollChat)
+// 思考步骤是在同一条消息里持续追加的，长度变化也要跟着滚到底
+watch(() => session.messages.map((m) => m.thinking?.length || 0).join(','), scrollChat)
 watch(draft, () => void nextTick(resizeInput))
 
 onMounted(() => {
@@ -220,6 +230,27 @@ onUnmounted(() => {
               <Icon :name="m.role === 'user' ? 'user' : 'bot'" :size="16" />
             </div>
             <div class="agent-bubble">
+              <!-- 思考过程：流式时逐条追加并强制展开，结束后可折叠回看 -->
+              <div
+                v-if="m.role === 'agent' && m.thinking && m.thinking.length"
+                class="think-box" :class="{ 'is-live': m.streaming }"
+              >
+                <button type="button" class="think-head" @click="toggleThink(m.id)">
+                  <a-spin v-if="m.streaming" size="small" />
+                  <Icon v-else name="flow" :size="13" />
+                  <span>{{ m.streaming ? t('agent.thinkingLive') : t('agent.thinkingTitle') }}</span>
+                  <a-tag v-if="!m.streaming">{{ m.thinking.length }} {{ t('agent.thinkSteps') }}</a-tag>
+                  <span class="spacer"></span>
+                  <Icon :name="m.streaming || !thinkClosed[m.id] ? 'up' : 'down'" :size="13" />
+                </button>
+                <div v-if="m.streaming || !thinkClosed[m.id]" class="think-body">
+                  <div v-for="(s, i) in m.thinking" :key="i" class="think-row">
+                    <span class="think-stage">{{ t('agent.stage.' + s.stage) }}</span>
+                    <span class="think-text">{{ s.text }}</span>
+                  </div>
+                </div>
+              </div>
+
               <div v-if="m.trace && m.trace.length" class="bubble-title">
                 <Icon name="checked" :size="13" /> {{ t('agent.planDone') }} · {{ m.trace.length }} {{ t('agent.stepsDone') }}
               </div>
@@ -239,7 +270,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div v-if="session.running" class="agent-msg">
+          <div v-if="session.running && !hasStreaming" class="agent-msg">
             <div class="agent-msg-av bot"><Icon name="bot" :size="16" /></div>
             <div class="agent-bubble"><a-spin size="small" /> {{ t('agent.thinking') }}</div>
           </div>

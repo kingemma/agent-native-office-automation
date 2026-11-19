@@ -7,6 +7,7 @@
 use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
     Json, Router,
 };
@@ -14,7 +15,10 @@ use oa_core::auth::SessionUser;
 use oa_core::{agent, auth, domain, files, store::Store, AppState};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::convert::Infallible;
 use std::path::PathBuf;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
@@ -179,6 +183,48 @@ async fn chat(
     let user = require_user(&st, &headers).await?;
     let reply = agent::run(st.app, &user, &req.message).await.map_err(err500)?;
     Ok(Json(reply))
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    q: String,
+}
+
+/// 流式对话：把 Agent 的思考步骤按 SSE 逐条推给前端。
+///
+/// 用 GET + query 而不是 POST，是为了让浏览器 `EventSource` 也能接；
+/// 但本项目登录态走 `Authorization: Bearer`（EventSource 不支持自定义头），
+/// 因此前端实际用 `fetch` + `ReadableStream` 读这个流。
+async fn agent_stream(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<StreamQuery>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let message = query.q.trim().to_string();
+    if message.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<agent::AgentEvent>();
+    let app = st.app.clone();
+    tokio::spawn(async move {
+        let result =
+            agent::run_stream(app, &user, &message, agent::Thinker::streaming(tx.clone())).await;
+        // 收尾帧：成功给完整回复，失败给错误文本，前端据此结束本轮
+        let last = match result {
+            Ok(reply) => agent::AgentEvent::Reply { reply },
+            Err(e) => agent::AgentEvent::Error { message: format!("{e:#}") },
+        };
+        let _ = tx.send(last);
+    });
+
+    let stream = UnboundedReceiverStream::new(rx).map(|event| {
+        let data = serde_json::to_string(&event)
+            .unwrap_or_else(|_| r#"{"type":"error","message":"事件序列化失败"}"#.to_string());
+        Ok(Event::default().data(data))
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn plan(
@@ -459,6 +505,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(users))
         .route("/api/users/{employee_id}/active", post(set_user_active))
         .route("/api/agent/chat", post(chat))
+        .route("/api/agent/stream", get(agent_stream))
         .route("/api/agent/plan", post(plan))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/call", post(call_tool))

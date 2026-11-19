@@ -21,13 +21,14 @@ pub mod intent;
 pub mod llm;
 pub mod tools;
 
-pub use intent::{AgentReply, PlanStep, TraceEntry};
+pub use intent::{AgentReply, PlanStep, ThinkStep, TraceEntry};
 
 use crate::auth::SessionUser;
 use crate::AppState;
 use anyhow::{anyhow, Context, Result};
 use rig::tool::ToolContext;
 use rig::AgentBuilder;
+use serde::Serialize;
 use serde_json::{json, Value};
 
 const PREAMBLE: &str = r#"你是「驭工 OA」的智能办公 Agent，可以代替用户操作人事、财务、合同、考勤、资产的全部流程。
@@ -58,20 +59,89 @@ fn desired_mode(has_config: bool) -> &'static str {
     }
 }
 
-/// 单次对话入口。桌面/移动端经 Tauri command 调用，服务端经 Axum 路由调用。
+/// SSE 一帧：思考步骤 / 最终回复 / 错误，三者互斥
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentEvent {
+    Think { stage: String, text: String },
+    Reply { reply: AgentReply },
+    Error { message: String },
+}
+
+/// 思考收集器：一边把步骤实时推给流式订阅者，一边留一份放进最终回复。
+pub struct Thinker {
+    sink: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    steps: Vec<ThinkStep>,
+}
+
+impl Thinker {
+    /// 非流式调用：只收集，不推送
+    pub fn silent() -> Self {
+        Self { sink: None, steps: Vec::new() }
+    }
+
+    pub fn streaming(tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Self {
+        Self { sink: Some(tx), steps: Vec::new() }
+    }
+
+    pub fn say(&mut self, stage: &str, text: impl Into<String>) {
+        let step = ThinkStep { stage: stage.to_string(), text: text.into() };
+        if let Some(tx) = &self.sink {
+            // 订阅端断开（用户关页面）不该让执行中断，忽略发送失败
+            let _ = tx.send(AgentEvent::Think {
+                stage: step.stage.clone(),
+                text: step.text.clone(),
+            });
+        }
+        self.steps.push(step);
+    }
+
+    pub fn snapshot(&self) -> Vec<ThinkStep> {
+        self.steps.clone()
+    }
+
+    pub fn steps(self) -> Vec<ThinkStep> {
+        self.steps
+    }
+}
+
+/// 单次对话入口（非流式）。桌面/移动端经 Tauri command 调用，服务端经 Axum 路由调用。
 pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<AgentReply> {
+    run_stream(state, user, message, Thinker::silent()).await
+}
+
+/// 流式入口：思考步骤边执行边推给 `thinker`，返回值里也带一份完整记录，
+/// 这样 `/api/agent/chat` 与 `/api/agent/stream` 共用同一条执行路径。
+pub async fn run_stream(
+    state: AppState,
+    user: &SessionUser,
+    message: &str,
+    mut thinker: Thinker,
+) -> Result<AgentReply> {
     let effective = llm::effective(&state.store).await?;
     if desired_mode(effective.config.is_some()) == "local" {
-        return intent::run_local(state, user, message).await;
+        thinker.say("route", "没有可用模型配置，走本地意图引擎");
+        return intent::run_local_stream(state, user, message, thinker).await;
     }
+    let label = effective
+        .config
+        .as_ref()
+        .map(|c| format!("{}/{}", c.provider, c.model))
+        .unwrap_or_else(|| "llm".to_string());
+    thinker.say("route", format!("使用模型 {label} 推理并调用工具"));
+
     let before = state.store.last_audit_id().await.unwrap_or(0);
-    match run_llm(state.clone(), user, message, effective.config).await {
-        Ok(reply) => Ok(reply),
+    match run_llm(state.clone(), user, message, effective.config, &mut thinker).await {
+        Ok(mut reply) => {
+            reply.thinking = thinker.snapshot();
+            Ok(reply)
+        }
         Err(error) => {
             // 关键：若模型在失败前已经执行过工具，绝不回退重跑，避免重复写入。
             let rows = state.store.audit_since(before).await.unwrap_or_default();
             if rows.is_empty() {
-                let mut local = intent::run_local(state, user, message).await?;
+                thinker.say("route", "模型调用失败，回退本地意图引擎执行");
+                let mut local = intent::run_local_stream(state, user, message, thinker).await?;
                 local.mode = "llm-fallback".into();
                 // `{error:#}` 打印完整因果链；只用 `{error}` 会丢掉网络/HTTP 底层原因
                 local.reply.push_str(&format!(
@@ -80,6 +150,7 @@ pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<A
                 Ok(local)
             } else {
                 let trace = trace_from_audit(&rows);
+                thinker.say("done", format!("模型在 {} 步工具调用后失败", trace.len()));
                 Ok(AgentReply {
                     reply: format!(
                         "模型在完成 {} 步工具调用后失败：{error}。\
@@ -90,6 +161,7 @@ pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<A
                     affected: affected_of(&trace),
                     trace,
                     plan: vec![],
+                    thinking: thinker.snapshot(),
                     pending: None,
                     needs_confirmation: false,
                 })
@@ -109,6 +181,7 @@ async fn run_llm(
     user: &SessionUser,
     message: &str,
     config: Option<llm::LlmConfig>,
+    thinker: &mut Thinker,
 ) -> Result<AgentReply> {
     let cfg = config.ok_or_else(|| {
         anyhow!(
@@ -143,6 +216,10 @@ async fn run_llm(
         .build();
 
     // 模型无法伪造身份：工具实例已绑定宿主注入的 SessionUser。
+    thinker.say(
+        "llm",
+        format!("已提交给 {}，单轮最多 10 次工具调用", cfg.model),
+    );
     let text = agent
         .prompt(message)
         .tool_context(ToolContext::new())
@@ -153,12 +230,31 @@ async fn run_llm(
 
     let rows = state.store.audit_since(before).await?;
     let trace = trace_from_audit(&rows);
+    // rig 内部完成多轮工具调用，审计表是唯一的事实来源：事后补推每一步
+    for entry in &trace {
+        thinker.say(
+            "tool",
+            format!(
+                "模型调用 `{}` {}：{}",
+                entry.tool,
+                if entry.ok { "成功" } else { "失败" },
+                entry
+                    .result
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .or_else(|| entry.result.get("error").and_then(Value::as_str))
+                    .unwrap_or("-")
+            ),
+        );
+    }
+    thinker.say("done", format!("模型完成推理，共 {} 次工具调用", trace.len()));
     Ok(AgentReply {
         reply: text,
         mode: "llm".into(),
         affected: affected_of(&trace),
         trace,
         plan: vec![],
+        thinking: thinker.snapshot(),
         pending: None,
         needs_confirmation: false,
     })

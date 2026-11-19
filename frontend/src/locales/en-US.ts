@@ -201,6 +201,12 @@ export default {
   agent: {
     title: 'Agent Console', desc: 'Drive every OA workflow with natural language.',
     cancelled: 'Sensitive action cancelled — nothing was written.',
+    thinkingTitle: 'Thinking process', thinkingLive: 'Thinking…', thinkSteps: 'steps',
+    streamBroken: 'Server returned no reply — please retry',
+    stage: {
+      route: 'Route', intent: 'Understand', plan: 'Plan',
+      tool: 'Tool', guard: 'Guard', llm: 'Reason', done: 'Done',
+    },
     heroTitle: 'One Agent. The entire OA.',
     heroDesc: 'The Agent understands intent, builds an execution plan, calls backend tools step by step, and syncs results across HR, Finance, Contracts, Attendance and Assets. Production uses Rust + Rig with a real LLM.',
     chip1: 'Rig 0.46 · Tool Calling', chip2: '19 Business Tools', chip3: 'Full Audit Trail', chip4: 'Human-in-the-loop',

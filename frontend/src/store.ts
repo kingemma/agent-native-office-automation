@@ -8,8 +8,8 @@
 import { computed, reactive, ref } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import {
-  agentChat,
   agentPlan as apiAgentPlan,
+  agentStream,
   callTool,
   getToken,
   listTools,
@@ -17,7 +17,9 @@ import {
   logout as apiLogout,
   me as apiMe,
   type AgentPlan,
+  type AgentReply,
   type AuthUser,
+  type ThinkStep,
   type ToolResult,
   type ToolSpec,
   type TraceStep,
@@ -50,6 +52,10 @@ export interface ChatMessage {
   trace?: TraceStep[]
   mode?: string
   affected?: string[]
+  /** 思考过程：流式时逐条追加，结束后保留供折叠查看 */
+  thinking?: ThinkStep[]
+  /** 该条回复仍在流式接收中 */
+  streaming?: boolean
 }
 
 /* ---------------- 认证 ---------------- */
@@ -219,8 +225,14 @@ function clock(): string {
   const d = new Date()
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
-function pushMsg(role: 'user' | 'agent', text: string, extra: Partial<ChatMessage> = {}): void {
-  session.messages.push({ id: ++msgId, role, text, time: clock(), ...extra })
+function pushMsg(
+  role: 'user' | 'agent',
+  text: string,
+  extra: Partial<ChatMessage> = {},
+): ChatMessage {
+  const msg: ChatMessage = { id: ++msgId, role, text, time: clock(), ...extra }
+  session.messages.push(msg)
+  return msg
 }
 
 /* ---------------- Agent 会话 ---------------- */
@@ -264,19 +276,37 @@ export async function sendAgent(text: string): Promise<void> {
   pushMsg('user', cmd)
   session.running = true
   session.trace = []
+  // 先占位：思考步骤每来一条就追加，回复帧到达后再补正文与轨迹
+  const msg = pushMsg('agent', '', { thinking: [], streaming: true })
   try {
-    const reply = await agentChat(cmd)
-    const trace: TraceStep[] = Array.isArray(reply?.trace) ? reply.trace : []
-    session.trace = trace
-    session.mode = String(reply?.mode || '')
-    pushMsg('agent', reply?.reply || gt('agent.unknown'), {
-      trace,
-      mode: session.mode,
-      affected: Array.isArray(reply?.affected) ? reply.affected : [],
+    // 用对象承接回调里的赋值：闭包内的赋值不参与 TS 的控制流收窄
+    const holder: { reply: AgentReply | null } = { reply: null }
+    let streamError = ''
+    await agentStream(cmd, (event) => {
+      if (event.type === 'think') {
+        msg.thinking?.push({ stage: event.stage, text: event.text })
+      } else if (event.type === 'reply') {
+        holder.reply = event.reply
+      } else {
+        streamError = event.message
+      }
     })
+    if (streamError) throw new Error(streamError)
+    const reply = holder.reply
+    if (!reply) throw new Error(gt('agent.streamBroken'))
+
+    const trace: TraceStep[] = Array.isArray(reply.trace) ? reply.trace : []
+    msg.text = reply.reply || gt('agent.unknown')
+    msg.trace = trace
+    msg.mode = String(reply.mode || '')
+    msg.affected = Array.isArray(reply.affected) ? reply.affected : []
+    if (Array.isArray(reply.thinking) && reply.thinking.length) msg.thinking = reply.thinking
+    msg.streaming = false
+    session.trace = trace
+    session.mode = msg.mode
 
     // 敏感操作门禁：Agent 停下后由用户确认，确认则带 confirmed=true 重试该步骤
-    const pending = reply?.pending
+    const pending = reply.pending
     if (pending && pending.tool) {
       const ok = await askConfirm(pending.tool)
       if (!ok) {
@@ -300,7 +330,8 @@ export async function sendAgent(text: string): Promise<void> {
   } catch (e) {
     if (String(e).includes('UNAUTHORIZED')) auth.user = null
     session.error = errorText(e)
-    pushMsg('agent', gt('error.requestFailed') + ': ' + errorText(e))
+    msg.text = gt('error.requestFailed') + ': ' + errorText(e)
+    msg.streaming = false
   } finally {
     session.running = false
   }

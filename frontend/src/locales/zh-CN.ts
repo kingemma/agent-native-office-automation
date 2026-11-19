@@ -199,6 +199,12 @@ export default {
   agent: {
     title: 'Agent 工作台', desc: '用自然语言驱动全部 OA 流程。',
     cancelled: '已取消该敏感操作，未写入任何数据。',
+    thinkingTitle: '思考过程', thinkingLive: '正在思考…', thinkSteps: '步',
+    streamBroken: '服务端没有返回任何回复，请重试',
+    stage: {
+      route: '路由', intent: '理解', plan: '规划',
+      tool: '执行', guard: '门禁', llm: '推理', done: '完成',
+    },
     heroTitle: '一个 Agent，操作整个 OA',
     heroDesc: 'Agent 会先理解意图、拆解执行计划，再依次调用后端工具完成写入，并把结果同步到人事、财务、合同、考勤、资产各模块。生产模式由 Rust + Rig 编排真实 LLM。',
     chip1: 'Rig 0.46 · Tool Calling', chip2: '19 个业务工具', chip3: '全链路审计', chip4: '人在回路审批',
