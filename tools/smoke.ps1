@@ -10,30 +10,45 @@ param([switch]$Build)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
-$Exe = Join-Path $Root 'target\debug\oa-server.exe'
-$Db = Join-Path $Root 'target\smoke.db'
+$OnWindows = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
+$Exe = if ($OnWindows) {
+    Join-Path $Root 'target/debug/oa-server.exe'
+}
+else {
+    Join-Path $Root 'target/debug/oa-server'
+}
+$Db = Join-Path $Root 'target/smoke.db'
 $Base = 'http://127.0.0.1:18787'
 
 if ($Build -or -not (Test-Path $Exe)) {
-    $Mingw = Join-Path $Root 'tools\mingw-bin\mingw64\bin'
-    $Toolchain = 'stable-x86_64-pc-windows-gnu'
-    $Sysroot = (& rustup run $Toolchain rustc --print sysroot).Trim()
-    $env:PATH = "$Mingw;$Sysroot\lib\rustlib\x86_64-pc-windows-gnu\bin\self-contained;$env:PATH"
     Push-Location $Root
-    & cargo "+$Toolchain" build -p oa-server
-    if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'cargo build -p oa-server failed' }
+    if ($OnWindows) {
+        # 与 tools/check.ps1 同一套约定：MSVC 不可用，走 GNU 工具链 + 自带 MinGW
+        $Mingw = Join-Path $Root 'tools/mingw-bin/mingw64/bin'
+        $Toolchain = 'stable-x86_64-pc-windows-gnu'
+        $Sysroot = (& rustup run $Toolchain rustc --print sysroot).Trim()
+        $env:PATH = "$Mingw;$Sysroot/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained;$env:PATH"
+        & cargo "+$Toolchain" build -p oa-server
+    }
+    else {
+        & cargo build -p oa-server
+    }
+    $buildExit = $LASTEXITCODE
     Pop-Location
+    if ($buildExit -ne 0) { throw 'cargo build -p oa-server failed' }
 }
 
 if (Test-Path $Db) { Remove-Item $Db }
 # 附件落盘目录也隔离到 target 下，跑完即删
-$Files = Join-Path $Root 'target\smoke-files'
+$Files = Join-Path $Root 'target/smoke-files'
 if (Test-Path $Files) { Remove-Item $Files -Recurse -Force }
 $env:OA_DB = $Db
 $env:OA_FILES = $Files
 $env:OA_ADDR = '127.0.0.1:18787'
 $env:OA_AGENT_MODE = 'local'
-$proc = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden
+$spArgs = @{ FilePath = $Exe; PassThru = $true }
+if ($OnWindows) { $spArgs.WindowStyle = 'Hidden' }
+$proc = Start-Process @spArgs
 Start-Sleep -Seconds 2
 
 function PostJson([string]$Path, $Body, [string]$Token) {

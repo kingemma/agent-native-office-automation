@@ -25,7 +25,10 @@ pub use intent::{AgentReply, PlanStep, ThinkStep, TraceEntry};
 
 use crate::auth::SessionUser;
 use crate::AppState;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
+use rig::streaming::{Item, StreamEvent};
 use rig::tool::ToolContext;
 use rig::AgentBuilder;
 use serde::Serialize;
@@ -64,6 +67,8 @@ fn desired_mode(has_config: bool) -> &'static str {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     Think { stage: String, text: String },
+    /// 正文增量：模型每吐一小段就推一帧，前端追加到气泡里
+    Delta { text: String },
     Reply { reply: AgentReply },
     Error { message: String },
 }
@@ -94,6 +99,13 @@ impl Thinker {
             });
         }
         self.steps.push(step);
+    }
+
+    /// 正文增量：只推给流式订阅者，不进入思考列表（最终正文由 Reply 帧给出）
+    pub fn delta(&self, text: impl Into<String>) {
+        if let Some(tx) = &self.sink {
+            let _ = tx.send(AgentEvent::Delta { text: text.into() });
+        }
     }
 
     pub fn snapshot(&self) -> Vec<ThinkStep> {
@@ -220,36 +232,62 @@ async fn run_llm(
         "llm",
         format!("已提交给 {}，单轮最多 10 次工具调用", cfg.model),
     );
-    let text = agent
+
+    // 走流式：文本增量边生成边推给前端，工具调用轮次由 rig 的 drive_agent 内部驱动，
+    // 与阻塞版共用同一套工具执行和审计逻辑，只是多了 delta 事件。
+    let mut stream = agent
         .prompt(message)
         .tool_context(ToolContext::new())
         .max_turns(10)
-        .await
-        .context("模型调用失败")?
-        .output();
+        .stream();
+
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut final_text: Option<String> = None;
+
+    while let Some(item) = stream.next().await {
+        match item.map_err(|e| anyhow!("模型流中断：{e}"))? {
+            MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Text {
+                text: delta, ..
+            })) => {
+                if !delta.is_empty() {
+                    text.push_str(&delta);
+                    thinker.delta(delta);
+                }
+            }
+            // 推理模型的内部思考：攒起来最后作为一条思考步骤展示，避免逐 token 刷屏
+            MultiTurnStreamItem::StreamAssistantItem(Item::Event(StreamEvent::Reasoning {
+                text: chunk,
+                ..
+            })) => reasoning.push_str(&chunk),
+            MultiTurnStreamItem::ToolCall { tool_call } => {
+                thinker.say("tool", format!("模型请求调用 `{}`", tool_call.function.name));
+            }
+            MultiTurnStreamItem::ToolResult { tool_result } => {
+                thinker.say("tool", format!("`{}` 已返回结果", tool_result.name));
+            }
+            MultiTurnStreamItem::FinalResponse(response) => final_text = Some(response.output()),
+            _ => {}
+        }
+    }
+
+    if !reasoning.trim().is_empty() {
+        thinker.say(
+            "llm",
+            format!("模型内部推理：{}", intent::brief(reasoning.trim(), 200)),
+        );
+    }
+
+    let reply_text = final_text.filter(|t| !t.trim().is_empty()).unwrap_or(text);
+    if reply_text.trim().is_empty() {
+        return Err(anyhow!("模型没有返回任何内容（流已结束但没有文本，也没有 FinalResponse）"));
+    }
 
     let rows = state.store.audit_since(before).await?;
     let trace = trace_from_audit(&rows);
-    // rig 内部完成多轮工具调用，审计表是唯一的事实来源：事后补推每一步
-    for entry in &trace {
-        thinker.say(
-            "tool",
-            format!(
-                "模型调用 `{}` {}：{}",
-                entry.tool,
-                if entry.ok { "成功" } else { "失败" },
-                entry
-                    .result
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .or_else(|| entry.result.get("error").and_then(Value::as_str))
-                    .unwrap_or("-")
-            ),
-        );
-    }
     thinker.say("done", format!("模型完成推理，共 {} 次工具调用", trace.len()));
     Ok(AgentReply {
-        reply: text,
+        reply: reply_text,
         mode: "llm".into(),
         affected: affected_of(&trace),
         trace,

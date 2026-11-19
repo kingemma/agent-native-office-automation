@@ -164,10 +164,7 @@ function resultText(v: unknown): string {
   }
   return String(v)
 }
-function shortResult(v: unknown): string {
-  const s = resultText(v)
-  return s.length > 48 ? s.slice(0, 48) + '…' : s
-}
+
 
 function scrollChat(): void {
   nextTick(() => {
@@ -177,6 +174,8 @@ function scrollChat(): void {
 watch([() => session.messages.length, () => session.running], scrollChat)
 // 思考步骤是在同一条消息里持续追加的，长度变化也要跟着滚到底
 watch(() => session.messages.map((m) => m.thinking?.length || 0).join(','), scrollChat)
+// 正文字节流式增长时同理
+watch(() => session.messages.reduce((n, m) => n + m.text.length, 0), scrollChat)
 watch(draft, () => void nextTick(resizeInput))
 
 onMounted(() => {
@@ -257,13 +256,6 @@ onUnmounted(() => {
               <!-- 用户输入保持纯文本；Agent 回复按 markdown 渲染（已过 DOMPurify） -->
               <div v-if="m.role === 'user'">{{ m.text }}</div>
               <div v-else class="md-body" v-html="renderMarkdown(m.text)"></div>
-              <div v-if="m.trace && m.trace.length" class="agent-plan-mini">
-                <div class="pm" v-for="(tr, i) in m.trace" :key="i">
-                  <i :style="{ background: tr.ok ? '#52c41a' : '#ff4d4f' }"></i>
-                  <code>{{ tr.tool }}</code>
-                  <span>{{ shortResult(tr.result) }}</span>
-                </div>
-              </div>
               <div v-if="m.mode" class="small muted" style="margin-top: 6px">
                 {{ t('agent.modeLabel') }}: {{ m.mode }}
               </div>

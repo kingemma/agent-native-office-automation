@@ -230,9 +230,10 @@ function pushMsg(
   text: string,
   extra: Partial<ChatMessage> = {},
 ): ChatMessage {
-  const msg: ChatMessage = { id: ++msgId, role, text, time: clock(), ...extra }
-  session.messages.push(msg)
-  return msg
+  session.messages.push({ id: ++msgId, role, text, time: clock(), ...extra })
+  // 必须回读数组元素拿到响应式代理：直接返回刚 push 的字面量对象时，后续对它的
+  // 修改不经过 Vue 的 Proxy，不会触发重渲染——表现就是流式内容"最后一次性冒出来"。
+  return session.messages[session.messages.length - 1]
 }
 
 /* ---------------- Agent 会话 ---------------- */
@@ -285,6 +286,9 @@ export async function sendAgent(text: string): Promise<void> {
     await agentStream(cmd, (event) => {
       if (event.type === 'think') {
         msg.thinking?.push({ stage: event.stage, text: event.text })
+      } else if (event.type === 'delta') {
+        // 正文增量：直接追加到占位消息，回复帧到达后再用完整文本覆盖
+        msg.text += event.text
       } else if (event.type === 'reply') {
         holder.reply = event.reply
       } else {

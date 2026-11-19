@@ -1,0 +1,41 @@
+# 驭工 OA 服务端 · systemd 单元
+#
+# 安装步骤（Debian/Ubuntu 系，root 执行）：
+#   install -d -o oa -g oa /opt/oa /var/lib/oa
+#   install -m 0755 target/release/oa-server /opt/oa/oa-server
+#   install -m 0644 deploy/oa-server.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now oa-server
+#
+# 数据（oa.db + 附件）落在 /var/lib/oa，升级时只替换 /opt/oa/oa-server 二进制。
+[Unit]
+Description=Yugong OA server (REST :8787)
+Documentation=https://github.com/kingemma/agent-native-office-automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oa
+Group=oa
+WorkingDirectory=/opt/oa
+
+# 默认就是 0.0.0.0:8787：局域网客户端需要能直连，绑 127.0.0.1 会连不上
+Environment=OA_ADDR=0.0.0.0:8787
+Environment=OA_DB=/var/lib/oa/oa.db
+Environment=OA_FILES=/var/lib/oa/oa-files
+Environment=RUST_LOG=info
+
+ExecStart=/opt/oa/oa-server
+Restart=on-failure
+RestartSec=3
+
+# 只允许写数据目录，其余文件系统只读
+StateDirectory=oa
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/oa
+
+[Install]
+WantedBy=multi-user.target

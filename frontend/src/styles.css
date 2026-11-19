@@ -260,10 +260,6 @@ body {
 .think-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.55; }
 .think-stage { flex: none; color: #1677ff; }
 .think-text { color: #595959; word-break: break-word; }
-.agent-plan-mini { margin-top: 8px; border-top: 1px dashed var(--oa-border); padding-top: 6px; }
-.pm { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--oa-muted); margin: 3px 0; }
-.pm i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.pm code { color: #2f54eb; }
 /* Agent 回复按 markdown 渲染：气泡的 pre-wrap 只服务用户手动输入的换行，
    渲染后的 HTML 需要回归 normal，否则源码缩进会变成多余空行 */
 .md-body { white-space: normal; overflow-x: auto; }

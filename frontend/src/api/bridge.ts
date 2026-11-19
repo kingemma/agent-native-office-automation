@@ -71,6 +71,7 @@ export interface AgentReply {
 /** GET /api/agent/stream 的 SSE 帧 */
 export type AgentEvent =
   | { type: 'think'; stage: string; text: string }
+  | { type: 'delta'; text: string }
   | { type: 'reply'; reply: AgentReply }
   | { type: 'error'; message: string }
 

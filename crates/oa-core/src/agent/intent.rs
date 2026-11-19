@@ -618,7 +618,7 @@ pub fn help_text(en: bool) -> String {
 }
 
 /// 按字符截断，用于思考日志里展示原始输入而不刷屏
-fn brief(text: &str, max: usize) -> String {
+pub(crate) fn brief(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         return flat;

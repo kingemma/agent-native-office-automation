@@ -52,9 +52,15 @@ Visual Studio；末尾参数原样透传给底层 CLI（`tauri` / `cargo`）。
 
 ### 1. 依赖
 
+三平台通用前置：**Node 22+**、**Rust stable**、**PowerShell 7（pwsh）**。
+`tools/*.ps1` 必须用 pwsh 执行——Windows 自带的 5.1 会按 ANSI 解码脚本里的中文注释，
+直接报 `UnexpectedToken` 语法错误。
+
 ```bash
 npm --prefix frontend install
 ```
+
+**Windows**
 
 Rust 侧统一使用 **GNU 工具链**（`stable-x86_64-pc-windows-gnu`）：
 
@@ -64,13 +70,32 @@ Rust 侧统一使用 **GNU 工具链**（`stable-x86_64-pc-windows-gnu`）：
   TLS 走系统实现（Windows Schannel / macOS Security.framework），不引入 OpenSSL。
 - `.cargo/config.toml` 只为 gnu 目标追加 `-Wl,--exclude-all-symbols`：
   链接 Tauri 的 cdylib 时符号数超过 MinGW ld 的 65535 导出上限，会报
-  `export ordinal too large`。msvc 构建不受影响。
+  `export ordinal too large`。msvc 构建不受影响；macOS/Linux 不会命中这个配置。
 - 若 `cargo` 仍指向 msvc 且本机缺 `link.exe`/CRT/SDK，执行
   `rustup default stable-x86_64-pc-windows-gnu` 后重试。
 
-```powershell
-.\tools\check.ps1 --workspace          # 类型检查（PowerShell）
-./tools/check.sh --workspace           # 类型检查（Git Bash / WSL）
+**macOS**
+
+```bash
+xcode-select --install                    # WebKit 与链接器
+rustup target add aarch64-apple-darwin    # Apple Silicon；Intel 机器用 x86_64-apple-darwin
+```
+
+**Linux（Debian / Ubuntu 系）**
+
+```bash
+sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+Fedora / Arch 的包名见 Tauri 官方 prerequisites，逻辑一致：需要 WebKitGTK 4.1 + GTK3 + libsoup3。
+服务端单独部署时不需要这些桌面依赖（只跑 `oa-server` 即可）。
+
+类型检查（三平台通用）：
+
+```bash
+pwsh -File ./tools/check.ps1 --workspace   # Windows 会自动注入 MinGW，mac/linux 直接用默认工具链
+bash ./tools/check.sh --workspace          # 没装 pwsh 时的等价选择
 ```
 
 ### 2. 服务端 + 浏览器
@@ -89,16 +114,19 @@ npm --prefix frontend run dev          # 终端 2：http://localhost:5173
 
 客户端不再带本地数据库，**必须先启动 oa-server**（同机或局域网/外网均可）：
 
-```powershell
-.\tools\tauri.ps1 dev                  # 开发：自动起 Vite + 编译 + 开窗
-.\tools\tauri.ps1 build --no-bundle    # 只出 target\release\oa-app.exe
-.\tools\tauri.ps1 build                # 前端 build + release + 安装包
+```bash
+pwsh -File ./tools/tauri.ps1 dev                 # 开发：自动起 oa-server + Vite + 编译 + 开窗
+pwsh -File ./tools/tauri.ps1 build --no-bundle   # 只出可执行文件（不打包安装包）
+pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当前平台安装包
 ```
+
+脚本内部按平台分流：Windows 注入 MinGW 并切 GNU 工具链，macOS/Linux 直接用 rustup 默认工具链，
+结束服务端统一用 `Kill(entireProcessTree)`（不再依赖 `taskkill.exe`），因此三平台同一套命令。
 
 等价的原始命令（在 `frontend` 目录执行）：`npm run tauri -- dev` / `npm run tauri -- build`。
 
-移动端：`.\tools\tauri.ps1 android init`（或 `ios init`）之后，用
-`.\tools\tauri.ps1 android dev` / `android build`；真机调试时 Tauri 会注入
+移动端：`pwsh -File ./tools/tauri.ps1 android init`（或 `ios init`）之后，用
+`pwsh -File ./tools/tauri.ps1 android dev` / `android build`；真机调试时 Tauri 会注入
 `TAURI_DEV_HOST`，Vite 自动监听局域网地址。
 
 ### 4. 客户端地址配置（局域网优先）
@@ -337,15 +365,49 @@ pwsh -NoProfile -File .\tools\make-updater-json.ps1 -Version v0.2.0
 
 ### 服务端部署
 
+服务端只有 Windows 和 Linux 两个目标，二进制与镜像行为一致：默认监听 `0.0.0.0:8787`，
+数据 = 一个 SQLite 文件 + 一个附件目录，升级只换可执行文件。
+
+**Linux · Docker（推荐）**
+
 ```bash
-# 镜像：内容只有 oa-server，数据全部落在 /data
 docker run -d --name oa-server -p 8787:8787 -v oa-data:/data \
   -e OA_INSTANCE=prod-1 ghcr.io/kingemma/agent-native-office-automation/oa-server:0.1.0
 ```
 
+**Linux · systemd（裸机）**
+
+```bash
+sudo useradd --system --home /opt/oa oa
+sudo install -d -o oa -g oa /opt/oa /var/lib/oa
+sudo install -m 0755 target/release/oa-server /opt/oa/oa-server
+sudo install -m 0644 deploy/oa-server.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now oa-server
+sudo ufw allow 8787/tcp            # firewalld：firewall-cmd --add-port=8787/tcp --permanent
+```
+
+**Windows**
+
+```powershell
+cargo build -p oa-server --release
+pwsh -File .\deploy\install-windows.ps1 -Source .\target\release\oa-server.exe
+```
+
+脚本会复制到 `C:\oa`、注册开机自启的计划任务（SYSTEM、崩溃自动重启）、放行入站 8787、
+启动后轮询 `/api/health` 确认就绪。之所以用计划任务而不是 `sc create`：oa-server 是普通
+控制台程序，没实现 SCM 接口，直接注册服务会因「服务未及时响应启动请求」失败。
+
+**局域网访问**
+
+- 服务端绑定 `0.0.0.0:8787`（默认），不要改成 `127.0.0.1`，否则同网段设备连不上。
+- 放行端口：Windows `New-NetFirewallRule -DisplayName 'Yugong OA 8787' -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow`；
+  Linux `ufw allow 8787/tcp`。
+- 客户端在登录页「服务器地址 → 局域网」填 `http://<服务器IP>:8787`；打包时也可以用
+  `VITE_API_LAN=http://192.168.1.10:8787` 作为出厂默认值，运行时仍以用户输入为准。
+- 服务端已开 `CorsLayer` 允许任意来源，桌面端、浏览器、手机都能直连，不需要额外代理。
+
 镜像内置 `HEALTHCHECK`（探 `/api/health`），首次启动自动建库并灌演示数据，
 **上线前必须改掉演示口令 `evan / oa123456`** 并清理演示数据（管理员调用 `POST /api/seed/reset`）。
-裸机部署则直接跑 `oa-server.exe`，用 `OA_DB` / `OA_FILES` / `OA_ADDR` 指到对应路径。
 
 ## 数据与安全
 
