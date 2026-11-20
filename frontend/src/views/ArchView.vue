@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 系统架构：技术栈 / 分层架构图 / 19 工具协议 / 五端打包矩阵 / 安全治理 */
+/** 系统架构：技术栈 / 分层架构图 / 20 工具协议 / 五端打包矩阵 / 安全治理 */
 import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'

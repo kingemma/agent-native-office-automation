@@ -12,7 +12,7 @@ import {
 import { QUICK_GROUPS, toClaim, toContract, type Claim, type Contract } from '../model'
 import { dateAdd, L, money, today, wan } from '../utils'
 import {
-  app, auth, bump, can, CURRENT_ACTOR, dataVersion, expandFullscreen, runCommand, submitTool,
+  app, auth, bump, can, dataVersion, expandFullscreen, runCommand, submitTool,
 } from '../store'
 
 const { t } = useI18n()
@@ -60,6 +60,7 @@ const claimTotal = computed(() =>
   claims.value.filter((c) => c.status !== 'rejected').reduce((n, c) => n + c.amount, 0),
 )
 const assetValue = computed(() => Number(m.value.asset_value_cents || 0) / 100)
+const payrollCents = computed(() => Number(m.value.payroll_cents || 0) / 100)
 const trend = computed(() => (Array.isArray(m.value.trend) ? m.value.trend.map(Number) : []))
 const maxTrend = computed(() => Math.max(1, ...trend.value))
 function barH(v: number): string {
@@ -104,7 +105,7 @@ function short(v: unknown): string {
   return s.length > 64 ? s.slice(0, 64) + '…' : s
 }
 async function approveClaim(id: string, decision: 'approve' | 'reject'): Promise<void> {
-  await submitTool('finance.claim.approve', { claim_id: id, decision, comment: '' }, CURRENT_ACTOR)
+  await submitTool('finance.claim.approve', { claim_id: id, decision, comment: '' })
 }
 async function resetDemo(): Promise<void> {
   try {
@@ -169,10 +170,7 @@ function runQuick(cmd: { zh: string; en: string }): void {
       <div class="oa-grid g-2-1 mb16">
         <a-card :title="t('dashboard.trend')">
           <template #extra>
-            <div class="trend-legend">
-              <span><i style="background: #1677ff"></i>{{ t('dashboard.reimburse') }}</span>
-              <span><i style="background: #52c41a"></i>{{ t('dashboard.payroll') }}</span>
-            </div>
+            <span class="small muted">{{ t('dashboard.payroll') }} <b>{{ money(payrollCents) }}</b></span>
           </template>
           <div class="trend-wrap">
             <div v-if="!trend.length" class="trend-empty">{{ t('dashboard.trendEmpty') }}</div>
@@ -180,7 +178,6 @@ function runQuick(cmd: { zh: string; en: string }): void {
               <div class="trend-col" v-for="(v, i) in trend" :key="i">
                 <div class="trend-bars">
                   <div class="trend-bar" :style="{ height: barH(v) }" :title="t('dashboard.reimburse') + ' ' + v"></div>
-                  <div class="trend-bar alt" :style="{ height: barH(Number(v) * 0.75) }" :title="t('dashboard.payroll') + ' ' + v"></div>
                 </div>
                 <div class="trend-label">{{ i + 1 }}</div>
               </div>

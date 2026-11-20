@@ -29,6 +29,16 @@ body {
 .cell-link:hover { text-decoration: underline; }
 .mb16 { margin-bottom: 16px; }
 .mt16 { margin-top: 16px; }
+.mt8 { margin-top: 8px; }
+/* 资产二维码：内联 SVG，居中展示 */
+.qr-box { margin-top: 16px; text-align: center; }
+.qr-svg svg { width: 160px; height: 160px; }
+/* 功能验收矩阵 */
+.feature-domain { font-weight: 600; }
+.feature-list { display: flex; flex-direction: column; }
+.feature-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #eee; }
+.feature-row:last-child { border-bottom: none; }
+.feature-text { color: #555; font-size: 13px; }
 .up { color: #389e0d; }
 .tool-name {
   font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px;

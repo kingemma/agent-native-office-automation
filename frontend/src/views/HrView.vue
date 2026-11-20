@@ -12,7 +12,7 @@ import {
 import {
   aliased, centsArgs, dateAdd, money, tagColor, today,
 } from '../utils'
-import { CURRENT_ACTOR, can, dataVersion, submitTool } from '../store'
+import { can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -182,7 +182,7 @@ async function submitOnboard(): Promise<void> {
       }),
       ...centsArgs('salary', onboardForm.salary),
     }
-    const res = await submitTool('hr.onboard', args, CURRENT_ACTOR)
+    const res = await submitTool('hr.onboard', args)
     if (res.ok) onboardOpen.value = false
   } finally {
     submitting.value = false
@@ -199,7 +199,7 @@ async function submitOffboard(): Promise<void> {
       }),
       handover_to: offboardForm.handover_to || '',
     }
-    const res = await submitTool('hr.offboard', args, CURRENT_ACTOR)
+    const res = await submitTool('hr.offboard', args)
     if (res.ok) offboardOpen.value = false
   } finally {
     submitting.value = false
@@ -217,8 +217,29 @@ async function submitPromote(): Promise<void> {
       }),
       ...centsArgs('new_salary', promoteForm.new_salary),
     }
-    const res = await submitTool('hr.promote', args, CURRENT_ACTOR)
+    const res = await submitTool('hr.promote', args)
     if (res.ok) promoteOpen.value = false
+  } finally {
+    submitting.value = false
+  }
+}
+
+/* ---------- 异动单审批 ---------- */
+const approveOpen = ref(false)
+const approveForm = reactive({ caseId: '', decision: 'approve', comment: '' })
+function openApprove(row: HrCase): void {
+  Object.assign(approveForm, { caseId: row.id, decision: 'approve', comment: '' })
+  approveOpen.value = true
+}
+async function submitApprove(): Promise<void> {
+  submitting.value = true
+  try {
+    const res = await submitTool('hr.approve', {
+      case_id: approveForm.caseId,
+      decision: approveForm.decision,
+      comment: approveForm.comment.trim() || '—',
+    })
+    if (res.ok) approveOpen.value = false
   } finally {
     submitting.value = false
   }
@@ -312,6 +333,7 @@ async function submitPromote(): Promise<void> {
                   <a-progress :percent="Math.round(record.stepIndex / 5 * 100)" size="small" />
                 </template>
                 <template v-else-if="column.key === 'action'">
+                  <a-button v-if="record.status === 'running' && can('hr.approve')" type="link" size="small" @click="openApprove(record)">{{ t('hr.approveAction') }}</a-button>
                   <a-button type="link" size="small" @click="openDetail('case', record)">{{ t('common.view') }}</a-button>
                 </template>
               </template>
@@ -369,6 +391,22 @@ async function submitPromote(): Promise<void> {
           <a-form-item :label="t('field.effectiveDate')"><a-date-picker v-model:value="promoteForm.effective_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
           <a-form-item :label="t('field.reason')"><a-input v-model:value="promoteForm.reason" /></a-form-item>
         </div>
+      </a-form>
+    </a-modal>
+
+    <!-- 异动单审批（敏感，逐级推进） -->
+    <a-modal v-model:open="approveOpen" :title="t('hr.approveTitle')" :confirm-loading="submitting" @ok="submitApprove">
+      <a-alert type="info" show-icon class="form-hint" :message="t('common.byAgent') + ' · hr.approve'" />
+      <a-form layout="vertical">
+        <a-form-item :label="t('field.decision')">
+          <a-radio-group v-model:value="approveForm.decision">
+            <a-radio-button value="approve">{{ t('hr.approve') }}</a-radio-button>
+            <a-radio-button value="reject">{{ t('hr.reject') }}</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item :label="t('field.comment')">
+          <a-textarea v-model:value="approveForm.comment" :rows="3" :placeholder="t('hr.commentPh')" />
+        </a-form-item>
       </a-form>
     </a-modal>
   </div>

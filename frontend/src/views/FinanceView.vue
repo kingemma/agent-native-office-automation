@@ -12,7 +12,7 @@ import {
   type ApprovalFlow, type Claim, type ClaimItem, type Department, type Employee,
 } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
-import { auth, CURRENT_ACTOR, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -146,7 +146,6 @@ async function submitApprove(): Promise<void> {
     const res = await submitTool(
       'finance.claim.approve',
       { claim_id: c.id, decision: approveDecision.value, comment: approveComment.value.trim(), confirmed: true },
-      CURRENT_ACTOR,
     )
     if (res.ok) approveOpen.value = false
   } finally {
@@ -323,7 +322,7 @@ async function submitClaim(): Promise<void> {
           }))
         : undefined,
     }
-    const res = await submitTool('finance.claim.create', args, CURRENT_ACTOR)
+    const res = await submitTool('finance.claim.create', args)
     if (!res.ok) return
     // 详情抽屉的附件列表挂在单号上，所以只能先建单、拿到 claim_id 再传
     const createdId = typeof res.claim_id === 'string' ? res.claim_id : ''

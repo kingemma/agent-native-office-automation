@@ -10,7 +10,7 @@ import {
   type ApprovalFlow, type Attendance, type Department, type Employee, type MakeupRequest,
 } from '../model'
 import { nowTime, tagColor, today } from '../utils'
-import { auth, CURRENT_ACTOR, CURRENT_USER_ID, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -167,10 +167,10 @@ const columns = computed(() => [
  */
 const punchEmployee = ref(auth.user?.employee_id || '')
 async function punch(type: 'in' | 'out'): Promise<void> {
-  const employeeId = punchEmployee.value || auth.user?.employee_id || employees.value[0]?.id || CURRENT_USER_ID
+  const employeeId = punchEmployee.value || auth.user?.employee_id || employees.value[0]?.id || ''
   await submitTool('attendance.checkin', {
     employeeId, type, source: 'desktop', time: nowTime(),
-  }, CURRENT_ACTOR)
+  })
   punchEmployee.value = employeeId
 }
 /* ---------- 补卡审批（申请只落请求，通过后才写考勤） ---------- */
@@ -208,7 +208,7 @@ async function submitDecide(): Promise<void> {
     // 弹窗本身即确认，带 confirmed 跳过 submitTool 的二次确认
     const res = await submitTool('attendance.approve', {
       request_id: row.id, decision: decideKind.value, comment: decideComment.value.trim(), confirmed: true,
-    }, CURRENT_ACTOR)
+    })
     if (res.ok) decideOpen.value = false
   } finally {
     deciding.value = false
@@ -249,7 +249,7 @@ async function submitMakeup(): Promise<void> {
       clockIn: makeupForm.clockIn,
       clockOut: makeupForm.clockOut,
       reason: makeupForm.reason.trim() || '—',
-    }, CURRENT_ACTOR)
+    })
     if (res.ok) makeupOpen.value = false
   } finally {
     submitting.value = false

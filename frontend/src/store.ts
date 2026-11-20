@@ -41,11 +41,7 @@ import { gt } from './i18n'
 
 export type PageKey =
   | 'dashboard' | 'hr' | 'finance' | 'contract'
-  | 'attendance' | 'asset' | 'agent' | 'arch'
-
-/** 兼容旧视图的展示常量（后端只信任会话身份，这两个值仅用于本地提示文案） */
-export const CURRENT_USER_ID = 'E01'
-export const CURRENT_ACTOR = 'Evan'
+  | 'attendance' | 'asset' | 'agent' | 'arch' | 'features' | 'settings'
 
 export interface ChatMessage {
   id: number
@@ -273,12 +269,13 @@ function pushMsg(
 const HISTORY_TURNS = 20
 
 const SENSITIVE = [
-  'hr.offboard', 'hr.promote', 'finance.claim.approve',
+  'hr.offboard', 'hr.promote', 'hr.approve', 'finance.claim.approve',
   'contract.create', 'contract.approve', 'attendance.approve',
 ]
 const CONFIRM_KEYS: Record<string, string> = {
   'hr.offboard': 'offboard',
   'hr.promote': 'promote',
+  'hr.approve': 'hrApprove',
   'finance.claim.approve': 'approve',
   'contract.create': 'contract',
   'contract.approve': 'contractApprove',
@@ -424,7 +421,6 @@ export async function loadTools(): Promise<void> {
 export async function submitTool(
   name: string,
   args: Record<string, unknown>,
-  _actor = CURRENT_ACTOR,
 ): Promise<ToolResult> {
   const sensitive = SENSITIVE.includes(name)
   // 调用方已在自己的弹窗里确认过（如审批意见框）就别再弹一次

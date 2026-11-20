@@ -18,6 +18,8 @@ import AttendanceView from './views/AttendanceView.vue'
 import AssetView from './views/AssetView.vue'
 import AgentView from './views/AgentView.vue'
 import ArchView from './views/ArchView.vue'
+import FeaturesView from './views/FeaturesView.vue'
+import SettingsView from './views/SettingsView.vue'
 import { changePassword, listTable } from './api/bridge'
 import { toggleLocale } from './i18n'
 import {
@@ -30,8 +32,12 @@ const { t } = useI18n()
 const viewMap: Record<PageKey, unknown> = {
   dashboard: DashboardView, hr: HrView, finance: FinanceView, contract: ContractView,
   attendance: AttendanceView, asset: AssetView, agent: AgentView, arch: ArchView,
+  features: FeaturesView, settings: SettingsView,
 }
-const PAGES: PageKey[] = ['dashboard', 'hr', 'finance', 'contract', 'attendance', 'asset', 'agent', 'arch']
+const PAGES: PageKey[] = [
+  'dashboard', 'hr', 'finance', 'contract', 'attendance', 'asset',
+  'agent', 'arch', 'features', 'settings',
+]
 const currentView = computed(() => viewMap[app.activePage])
 
 const collapsed = ref(false)
@@ -52,7 +58,12 @@ const menuGroups: { key: string; items: { key: PageKey; icon: string }[] }[] = [
     ],
   },
   { key: 'intelligence', items: [{ key: 'agent', icon: 'bot' }] },
-  { key: 'system', items: [{ key: 'arch', icon: 'layers' }] },
+  {
+    key: 'system', items: [
+      { key: 'arch', icon: 'layers' }, { key: 'features', icon: 'target' },
+      { key: 'settings', icon: 'settings' },
+    ],
+  },
 ]
 
 function go(page: PageKey): void {

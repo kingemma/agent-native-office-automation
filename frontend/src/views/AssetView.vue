@@ -7,7 +7,7 @@ import AsyncPanel from '../components/AsyncPanel.vue'
 import { listTable } from '../api/bridge'
 import { ASSET_CATEGORIES, toAsset, toEmployee, type Asset, type Employee } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
-import { CURRENT_ACTOR, can, dataVersion, submitTool } from '../store'
+import { can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -74,6 +74,11 @@ const distRows = computed(() =>
   ASSET_CATEGORIES.map((k) => ({ key: k, n: assets.value.filter((a) => a.category === k).length }))
     .filter((r) => r.n > 0).sort((a, b) => b.n - a.n),
 )
+const inventoryColumns = computed(() => [
+  { title: t('asset.colCategory'), key: 'category' },
+  { title: t('common.total'), key: 'cnt', align: 'right' as const },
+  { title: t('asset.colPrice'), key: 'value', align: 'right' as const },
+])
 const columns = computed(() => [
   { title: t('asset.colNo'), dataIndex: 'id', key: 'id' },
   { title: t('asset.colCategory'), key: 'category' },
@@ -107,10 +112,23 @@ function openDetail(row: Asset): void {
 
 /* ---------- 写操作 ---------- */
 async function returnAsset(id: string): Promise<void> {
-  await submitTool('asset.return', { asset_id: id, condition: 'good' }, CURRENT_ACTOR)
+  await submitTool('asset.return', { asset_id: id, condition: 'good' })
 }
+
+/** 盘点结果：asset.query 按类别汇总（服务端口径），点「盘点」后展示 */
+interface InventoryRow { category: string; cnt: number; value: number }
+const inventoryRows = ref<InventoryRow[]>([])
+const inventoryValue = ref(0)
 async function inventory(): Promise<void> {
-  await submitTool('asset.query', { group_by: 'category' }, CURRENT_ACTOR)
+  const res = await submitTool('asset.query', { group_by: 'category' })
+  const r = res as unknown as {
+    by_category?: { category: string; cnt: number; value: number }[]
+    total_value_cents?: number
+  }
+  inventoryRows.value = (r.by_category || []).map((x) => ({
+    category: String(x.category), cnt: Number(x.cnt), value: Number(x.value),
+  }))
+  inventoryValue.value = Number(r.total_value_cents || 0)
 }
 
 const regOpen = ref(false)
@@ -142,7 +160,7 @@ async function submitReg(): Promise<void> {
       location: regForm.location.trim() || '—',
       ...centsArgs('price', regForm.price),
     }
-    const res = await submitTool('asset.register', args, CURRENT_ACTOR)
+    const res = await submitTool('asset.register', args)
     if (res.ok) regOpen.value = false
   } finally { submitting.value = false }
 }
@@ -150,14 +168,14 @@ async function submitAssign(): Promise<void> {
   submitting.value = true
   try {
     const args = aliased({ asset_id: assignForm.asset_id, employeeId: assignForm.employeeId })
-    const res = await submitTool('asset.assign', args, CURRENT_ACTOR)
+    const res = await submitTool('asset.assign', args)
     if (res.ok) assignOpen.value = false
   } finally { submitting.value = false }
 }
 async function submitReturn(): Promise<void> {
   submitting.value = true
   try {
-    const res = await submitTool('asset.return', { asset_id: returnForm.asset_id, condition: 'good' }, CURRENT_ACTOR)
+    const res = await submitTool('asset.return', { asset_id: returnForm.asset_id, condition: 'good' })
     if (res.ok) returnOpen.value = false
   } finally { submitting.value = false }
 }
@@ -221,6 +239,17 @@ async function submitReturn(): Promise<void> {
           </div>
         </div>
       </a-card>
+
+      <!-- 盘点结果（点「盘点」后按类别汇总） -->
+      <a-card v-if="inventoryRows.length" :title="t('asset.inventoryTitle')" class="mt16">
+        <template #extra><span class="small muted">{{ t('asset.totalValue') }}: <b>{{ money(inventoryValue) }}</b></span></template>
+        <a-table class="oa-table" :columns="inventoryColumns" :data-source="inventoryRows" row-key="category" :pagination="false" size="small">
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'category'">{{ t('st.' + record.category) }}</template>
+            <template v-else-if="column.key === 'value'"><span class="cell-num">{{ money(record.value) }}</span></template>
+          </template>
+        </a-table>
+      </a-card>
     </AsyncPanel>
 
     <!-- 详情 -->
@@ -229,6 +258,11 @@ async function submitReturn(): Promise<void> {
         <div class="desc-item" v-for="(r, i) in detailRows" :key="i">
           <span class="desc-k">{{ r.k }}</span><span class="desc-v">{{ r.v }}</span>
         </div>
+      </div>
+      <div v-if="detailRow?.qrCode" class="qr-box">
+        <div v-if="detailRow.qrCode.trim().startsWith('<svg')" v-html="detailRow.qrCode" class="qr-svg"></div>
+        <span v-else class="small muted">{{ detailRow.qrCode }}</span>
+        <div class="small muted mt8">{{ t('asset.qrHint') }}</div>
       </div>
     </a-drawer>
 

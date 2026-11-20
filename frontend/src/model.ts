@@ -250,6 +250,7 @@ export interface Asset {
   location: string
   price: number // 元
   purchaseDate: string
+  qrCode: string
 }
 export function toAsset(r: Row): Asset {
   return {
@@ -262,6 +263,7 @@ export function toAsset(r: Row): Asset {
     location: L(pick(r, 'location')),
     price: toYuan(r, 'price_cents', 'price'),
     purchaseDate: str(pick(r, 'purchase_date', 'purchaseDate')),
+    qrCode: str(pick(r, 'qr_code', 'qrCode')),
   }
 }
 
@@ -279,11 +281,12 @@ export interface ToolEntry {
   desc: Bilingual
 }
 
-/** 19 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
+/** 20 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
 export const TOOL_CATALOG: ToolEntry[] = [
   { name: 'hr.onboard', domain: 'hr', params: 'name, dept, position, entry_date, salary, manager', desc: { zh: '创建员工档案并启动入职流程（资料→合同→设备→培训）', en: 'Create employee record and kick off the onboarding flow' } },
   { name: 'hr.offboard', domain: 'hr', params: 'employee, last_day, reason, handover_to', desc: { zh: '发起离职流程、冻结账号、生成交接与资产回收清单', en: 'Start offboarding, freeze accounts, build handover & asset return checklist' } },
   { name: 'hr.promote', domain: 'hr', params: 'employee, new_salary, new_position, effective_date, reason', desc: { zh: '晋升/涨薪，写入异动记录并按金额分派审批链', en: 'Promotion / raise: write HR change record and route approval chain' } },
+  { name: 'hr.approve', domain: 'hr', params: 'case_id, decision, comment?', desc: { zh: '人事异动单（入职/离职/晋升）逐级审批，末级通过才生效', en: 'Approve HR change cases step by step; effective after the final step' } },
   { name: 'hr.roster.query', domain: 'hr', params: 'dept?, status?, keyword?', desc: { zh: '按部门、状态、关键词检索员工花名册', en: 'Query the employee roster by department, status or keyword' } },
   { name: 'org.chart', domain: 'org', params: 'dept?', desc: { zh: '返回组织架构与各节点实时在编人数', en: 'Return the org chart with live headcount per node' } },
   { name: 'finance.claim.create', domain: 'finance', params: 'type, applicant, amount, purpose, project?, items?', desc: { zh: '创建三类报销单，自动校验预算并生成审批链', en: 'Create daily / business / project claims with budget check and approval routing' } },
@@ -383,7 +386,7 @@ export const STACK_CARDS = [
 /** 分层架构图 */
 export const ARCH_LAYERS = [
   { k: 'l1', ico: 'grid', pills: ['Vue SFC', 'Pinia', 'Design Token', 'vue-i18n'] },
-  { k: 'l2', ico: 'flow', pills: ['Tauri invoke', 'Axum HTTP', 'bridge.ts', 'Capability'] },
+  { k: 'l2', ico: 'flow', pills: ['REST · Axum', 'bridge.ts', 'Bearer 会话', 'CORS'] },
   { k: 'l3', ico: 'bot', pills: ['Rig AgentBuilder', 'Tool trait', 'AgentHook', 'ToolContext'] },
   { k: 'l4', ico: 'database', pills: ['Approval FSM', 'Audit Event', 'sqlx', 'Migration'] },
 ]

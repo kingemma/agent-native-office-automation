@@ -11,7 +11,7 @@ import {
   type ApprovalFlow, type Contract, type Employee,
 } from '../model'
 import { aliased, centsArgs, dateAdd, money, tagColor, today, wan } from '../utils'
-import { auth, CURRENT_ACTOR, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -128,7 +128,6 @@ async function submitApprove(): Promise<void> {
     const res = await submitTool(
       'contract.approve',
       { contract_id: c.id, decision: approveDecision.value, comment: approveComment.value.trim(), confirmed: true },
-      CURRENT_ACTOR,
     )
     if (res.ok) approveOpen.value = false
   } finally {
@@ -179,7 +178,7 @@ async function submitForm(): Promise<void> {
       }),
       ...centsArgs('amount', form.amount),
     }
-    const res = await submitTool('contract.create', args, CURRENT_ACTOR)
+    const res = await submitTool('contract.create', args)
     if (res.ok) formOpen.value = false
   } finally {
     submitting.value = false

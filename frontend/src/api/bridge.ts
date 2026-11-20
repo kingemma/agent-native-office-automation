@@ -107,6 +107,7 @@ export interface Metrics {
   pending_claims: number
   expiring_contracts: number
   asset_value_cents: number
+  payroll_cents: number
   attendance_rate: number
   budget_used_cents: number
   budget_total_cents: number
