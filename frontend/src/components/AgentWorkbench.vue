@@ -11,7 +11,7 @@ import { QUICK_GROUPS, TOOL_CATALOG } from '../model'
 import { renderMarkdown } from '../markdown'
 import { json, L } from '../utils'
 import {
-  clearSession, dock, loadTools, previewPlan, sendAgent, session,
+  clearSession, dock, loadAgentModels, loadTools, previewPlan, sendAgent, session,
 } from '../store'
 
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
@@ -19,6 +19,10 @@ withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
 const { t } = useI18n()
 const draft = ref('')
 const traceOpen = ref(false)
+/** 头部模型下拉的选项：服务端返回的可用模型 */
+const modelOptions = computed(() =>
+  session.models.map((m) => ({ label: m, value: m })),
+)
 const chatBody = ref<HTMLElement | null>(null)
 const caps = ['capHr', 'capFin', 'capCon', 'capAtt', 'capAst']
 
@@ -180,6 +184,7 @@ watch(draft, () => void nextTick(resizeInput))
 
 onMounted(() => {
   if (!session.tools.length) void loadTools()
+  if (!session.modelsLoaded) void loadAgentModels()
   if (session.trace.length) traceOpen.value = true
   voiceSupported.value = recognizerCtor() !== null
   scrollChat()
@@ -208,6 +213,16 @@ onUnmounted(() => {
       <!-- 对话 -->
       <a-card class="agent-chat" :title="t('agent.chatTitle')">
         <template #extra>
+          <!-- 可选模型来自「模型设置」里配置的端点；只有一个模型时不占位 -->
+          <a-select
+            v-if="session.models.length > 1"
+            v-model:value="session.model"
+            :options="modelOptions"
+            :disabled="session.running"
+            size="small"
+            class="agent-model-select"
+            :title="t('agent.modelHint')"
+          />
           <a-button v-if="!compact" type="text" size="small" @click="dock">
             <Icon name="panel" :size="13" /> {{ t('agent.dock') }}
           </a-button>

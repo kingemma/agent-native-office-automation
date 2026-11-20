@@ -154,7 +154,7 @@ const MAX_HISTORY_CHARS: usize = 2000;
 
 /// 单次对话入口（非流式）。服务端经 Axum 路由调用。
 pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<AgentReply> {
-    run_with_history(state, user, message, &[], Thinker::silent()).await
+    run_with_history(state, user, message, &[], "", Thinker::silent()).await
 }
 
 /// 流式入口（不带历史），保留给只取单轮结果的调用方。
@@ -164,7 +164,7 @@ pub async fn run_stream(
     message: &str,
     thinker: Thinker,
 ) -> Result<AgentReply> {
-    run_with_history(state, user, message, &[], thinker).await
+    run_with_history(state, user, message, &[], "", thinker).await
 }
 
 /// 带历史的流式入口：`history` 是本轮之前已经发生的对话，按时间正序。
@@ -176,9 +176,10 @@ pub async fn run_stream_with_history(
     user: &SessionUser,
     message: &str,
     history: &[ChatTurn],
+    model: &str,
     thinker: Thinker,
 ) -> Result<AgentReply> {
-    run_with_history(state, user, message, history, thinker).await
+    run_with_history(state, user, message, history, model, thinker).await
 }
 
 async fn run_with_history(
@@ -186,6 +187,7 @@ async fn run_with_history(
     user: &SessionUser,
     message: &str,
     history: &[ChatTurn],
+    model: &str,
     mut thinker: Thinker,
 ) -> Result<AgentReply> {
     let effective = llm::effective(&state.store).await?;
@@ -193,10 +195,14 @@ async fn run_with_history(
         thinker.say("route", "没有可用模型配置，走本地意图引擎");
         return intent::run_local_stream(state, user, message, thinker).await;
     }
+    // 对话页可以临时换模型：Base URL / Key 仍用已存配置，只覆盖 model 名
     let label = effective
         .config
         .as_ref()
-        .map(|c| format!("{}/{}", c.provider, c.model))
+        .map(|c| {
+            let model = if model.trim().is_empty() { &c.model } else { model.trim() };
+            format!("{}/{}", c.provider, model)
+        })
         .unwrap_or_else(|| "llm".to_string());
     thinker.say("route", format!("使用模型 {label} 推理并调用工具"));
     if !history.is_empty() {
@@ -204,7 +210,17 @@ async fn run_with_history(
     }
 
     let before = state.store.last_audit_id().await.unwrap_or(0);
-    match run_llm(state.clone(), user, message, history, effective.config, &mut thinker).await {
+    match run_llm(
+        state.clone(),
+        user,
+        message,
+        history,
+        model,
+        effective.config,
+        &mut thinker,
+    )
+    .await
+    {
         Ok(mut reply) => {
             reply.thinking = thinker.snapshot();
             Ok(reply)
@@ -254,15 +270,22 @@ async fn run_llm(
     user: &SessionUser,
     message: &str,
     history: &[ChatTurn],
+    model: &str,
     config: Option<llm::LlmConfig>,
     thinker: &mut Thinker,
 ) -> Result<AgentReply> {
-    let cfg = config.ok_or_else(|| {
+    let stored = config.ok_or_else(|| {
         anyhow!(
             "缺少 LLM 配置：请在「模型设置」里选择提供商并填写 API Key，\
              或设置 OPENAI_API_KEY 环境变量（也可用 OA_AGENT_MODE=local 走离线引擎）"
         )
     })?;
+    // 只覆盖模型名：请求里没指定（空串）就用已存配置的那个
+    let cfg = if model.trim().is_empty() {
+        stored
+    } else {
+        llm::LlmConfig { model: model.trim().to_string(), ..stored }
+    };
     let client = llm::build_client(&cfg)?;
 
     let before = state.store.last_audit_id().await?;

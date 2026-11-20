@@ -248,6 +248,8 @@ body {
 .agent-workbench:not(.is-compact) .agent-quick-chips { flex-wrap: nowrap; overflow-x: auto; max-height: none; }
 /* 单行不换行时禁止压缩：否则窄屏上快捷指令会被挤成竖排单字，此时应横向滚动 */
 .agent-workbench:not(.is-compact) .agent-quick-chips .agent-chip { flex: none; }
+/* 头部的模型下拉：定宽 + 省略，长模型名不挤压右侧按钮 */
+.agent-model-select { width: 170px; margin-right: 8px; flex: none; }
 .agent-msg { display: flex; gap: 10px; margin-bottom: 16px; align-items: flex-start; }
 .agent-msg.is-user { flex-direction: row-reverse; }
 .agent-msg-av { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; }

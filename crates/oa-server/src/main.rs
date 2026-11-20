@@ -176,6 +176,9 @@ struct MessageReq {
     /// 本轮之前的对话，服务端不再自己保存会话状态
     #[serde(default)]
     history: Vec<agent::ChatTurn>,
+    /// 覆盖已存配置的模型名；空串表示沿用配置
+    #[serde(default)]
+    model: String,
 }
 
 async fn chat(
@@ -189,11 +192,33 @@ async fn chat(
         &user,
         &req.message,
         &req.history,
+        &req.model,
         agent::Thinker::silent(),
     )
     .await
     .map_err(err500)?;
     Ok(Json(reply))
+}
+
+/// 对话页的模型下拉数据源：列出当前端点可用的模型，任意登录用户可读。
+///
+/// 只暴露模型名，不含 Key；端点不实现 `/models` 时退回「只用已存模型」，
+/// 不因此把对话页卡住。
+async fn agent_models(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let _user = require_user(&st, &headers).await?;
+    let configured = agent::llm::effective(&st.app.store).await.map_err(err500)?;
+    let Some(cfg) = configured.config else {
+        return Ok(Json(json!({ "models": [], "current": "", "mode": "local" })));
+    };
+    let (models, error) = match agent::llm::list_models(&st.app.store, "", "").await {
+        Ok(list) if !list.is_empty() => (list, String::new()),
+        Ok(_) => (vec![cfg.model.clone()], String::new()),
+        Err(e) => (vec![cfg.model.clone()], format!("{e:#}")),
+    };
+    Ok(Json(json!({ "models": models, "current": cfg.model, "mode": "llm", "error": error })))
 }
 
 #[derive(Deserialize)]
@@ -207,6 +232,7 @@ fn agent_sse(
     user: SessionUser,
     message: String,
     history: Vec<agent::ChatTurn>,
+    model: String,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<agent::AgentEvent>();
     tokio::spawn(async move {
@@ -215,6 +241,7 @@ fn agent_sse(
             &user,
             &message,
             &history,
+            &model,
             agent::Thinker::streaming(tx.clone()),
         )
         .await;
@@ -245,7 +272,7 @@ async fn agent_stream(
     if message.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
     }
-    Ok(agent_sse(st.app, user, message, Vec::new()))
+    Ok(agent_sse(st.app, user, message, Vec::new(), String::new()))
 }
 
 /// 流式对话（POST 主口）：请求体带上最近若干轮历史，模型才能接着上文回答。
@@ -260,7 +287,7 @@ async fn agent_stream_post(
     if message.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
     }
-    Ok(agent_sse(st.app, user, message, req.history))
+    Ok(agent_sse(st.app, user, message, req.history, req.model))
 }
 
 async fn plan(
@@ -577,6 +604,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users/{employee_id}/active", post(set_user_active))
         .route("/api/agent/chat", post(chat))
         .route("/api/agent/stream", get(agent_stream).post(agent_stream_post))
+        .route("/api/agent/models", get(agent_models))
         .route("/api/agent/plan", post(plan))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/call", post(call_tool))

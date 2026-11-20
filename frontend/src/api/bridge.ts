@@ -314,6 +314,28 @@ export async function agentChat(message: string): Promise<AgentReply> {
   return httpPost<AgentReply>('/api/agent/chat', { message })
 }
 
+/** GET /api/agent/models：对话页模型下拉的数据源 */
+export interface AgentModelsView {
+  /** 当前端点可用的模型名 */
+  models: string[]
+  /** 已配置的模型，作为默认选中项 */
+  current: string
+  /** llm / local */
+  mode: string
+  /** 拉取失败时的原因，列表会退回只含 current */
+  error: string
+}
+
+export async function listAgentModels(): Promise<AgentModelsView> {
+  const data = await httpGet<Partial<AgentModelsView>>('/api/agent/models')
+  return {
+    models: Array.isArray(data.models) ? data.models.map(String) : [],
+    current: String(data.current ?? ''),
+    mode: String(data.mode ?? ''),
+    error: String(data.error ?? ''),
+  }
+}
+
 /**
  * 流式对话：逐条读 SSE 帧并回调。
  *
@@ -323,13 +345,15 @@ export async function agentChat(message: string): Promise<AgentReply> {
 export async function agentStream(
   message: string,
   history: ChatTurn[],
+  model: string,
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${getBase()}/api/agent/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ message, history }),
+    // model 为空串表示沿用「模型设置」里存的那个
+    body: JSON.stringify({ message, history, model }),
     signal,
   })
   if (res.status === 401) {

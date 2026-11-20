@@ -12,6 +12,7 @@ import {
   agentStream,
   callTool,
   getToken,
+  listAgentModels,
   listTools,
   type ChatTurn,
   login as apiLogin,
@@ -219,7 +220,25 @@ export const session = reactive({
   planLoading: false,
   error: '',
   mode: '',
+  /** 对话页选中的模型；空串表示沿用「模型设置」里存的那个 */
+  model: '',
+  /** 当前端点可选的模型清单，来自 GET /api/agent/models */
+  models: [] as string[],
+  modelsLoaded: false,
 })
+
+/** 拉取可选模型；失败只记一笔，不影响对话本身 */
+export async function loadAgentModels(): Promise<void> {
+  try {
+    const res = await listAgentModels()
+    session.models = res.models
+    if (!session.model) session.model = res.current
+    session.modelsLoaded = true
+  } catch {
+    // 端点未实现 /models 或无模型配置时静默降级：下拉为空即不显示
+    session.modelsLoaded = true
+  }
+}
 
 let msgId = 0
 function clock(): string {
@@ -293,7 +312,7 @@ export async function sendAgent(text: string): Promise<void> {
     // 用对象承接回调里的赋值：闭包内的赋值不参与 TS 的控制流收窄
     const holder: { reply: AgentReply | null } = { reply: null }
     let streamError = ''
-    await agentStream(cmd, history, (event) => {
+    await agentStream(cmd, history, session.model, (event) => {
       if (event.type === 'think') {
         msg.thinking?.push({ stage: event.stage, text: event.text })
       } else if (event.type === 'delta') {

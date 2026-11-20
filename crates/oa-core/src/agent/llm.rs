@@ -270,10 +270,16 @@ fn brief(text: &str, max: usize) -> String {
 
 /// 列出端点上的可用模型（OpenAI 兼容 `GET {base_url}/models`）。
 ///
-/// 管理员往往只填了 Base URL 就想知道该选哪个模型名，所以 `api_key` 留空时
-/// 沿用已存 Key——这样改 Base URL 不必先把 Key 重新输一遍。
+/// `base_url` / `api_key` 留空时回落到已存配置：管理员改 Base URL 时不必重输 Key，
+/// 对话页想列出「当前端点有哪些模型」也可以直接空参调用。
 pub async fn list_models(store: &Store, base_url: &str, api_key: &str) -> Result<Vec<String>> {
-    let base = base_url.trim().trim_end_matches('/');
+    let stored = stored_config(store).await?;
+    let base = if base_url.trim().is_empty() {
+        stored.as_ref().map(|c| c.base_url.clone()).unwrap_or_default()
+    } else {
+        base_url.trim().to_string()
+    };
+    let base = base.trim_end_matches('/').to_string();
     if base.is_empty() {
         return Err(anyhow!("请先填写 Base URL"));
     }
@@ -281,7 +287,7 @@ pub async fn list_models(store: &Store, base_url: &str, api_key: &str) -> Result
         return Err(anyhow!("Base URL 必须以 http:// 或 https:// 开头"));
     }
     let key = if api_key.trim().is_empty() {
-        stored_config(store).await?.map(|c| c.api_key).unwrap_or_default()
+        stored.map(|c| c.api_key).unwrap_or_default()
     } else {
         api_key.trim().to_string()
     };

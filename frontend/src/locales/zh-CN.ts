@@ -201,6 +201,7 @@ export default {
     cancelled: '已取消该敏感操作，未写入任何数据。',
     thinkingTitle: '思考过程', thinkingLive: '正在思考…', thinkSteps: '步',
     streamBroken: '服务端没有返回任何回复，请重试',
+    modelHint: '本轮对话使用的模型，来自「模型设置」配置的端点',
     stage: {
       route: '路由', intent: '理解', plan: '规划',
       tool: '执行', guard: '门禁', llm: '推理', done: '完成',

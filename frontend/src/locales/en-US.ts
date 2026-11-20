@@ -203,6 +203,7 @@ export default {
     cancelled: 'Sensitive action cancelled — nothing was written.',
     thinkingTitle: 'Thinking process', thinkingLive: 'Thinking…', thinkSteps: 'steps',
     streamBroken: 'Server returned no reply — please retry',
+    modelHint: 'Model used for this conversation, from the endpoint configured in Model settings',
     stage: {
       route: 'Route', intent: 'Understand', plan: 'Plan',
       tool: 'Tool', guard: 'Guard', llm: 'Reason', done: 'Done',
