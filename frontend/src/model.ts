@@ -178,7 +178,8 @@ export function toContract(r: Row): Contract {
     id: str(pick(r, 'id')),
     name: L(pick(r, 'name')),
     party: L(pick(r, 'party')),
-    type: str(pick(r, 'type')),
+    // contracts 表列名是 kind，只认 type 会让类型列渲染成「st.—」、类型筛选永远命中 0 条
+    type: str(pick(r, 'kind', 'type')),
     amount: toYuan(r, 'amount_cents', 'amount'),
     signDate: str(pick(r, 'sign_date', 'signDate')),
     expireDate: str(pick(r, 'expire_date', 'expireDate')),
