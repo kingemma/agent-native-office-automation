@@ -200,8 +200,9 @@ export interface Attendance {
 export function toAttendance(r: Row): Attendance {
   return {
     id: str(pick(r, 'id')),
-    empId: str(pick(r, 'emp_id', 'empId')),
-    date: str(pick(r, 'date')),
+    // attendance 表列名是 employee_id / work_date，少写这两个别名会让今日打卡与月度汇总全空
+    empId: str(pick(r, 'employee_id', 'employeeId', 'emp_id', 'empId')),
+    date: str(pick(r, 'work_date', 'workDate', 'date')),
     checkIn: str(pick(r, 'check_in', 'in', 'clock_in', 'checkIn')),
     checkOut: str(pick(r, 'check_out', 'out', 'clock_out', 'checkOut')),
     status: str(pick(r, 'status')),

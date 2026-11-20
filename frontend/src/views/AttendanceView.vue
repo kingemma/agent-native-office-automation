@@ -34,6 +34,8 @@ async function load(): Promise<void> {
     departments.value = de.map(toDepartment)
     makeups.value = mk.map(toMakeupRequest)
     flows.value = fl.map(toFlow)
+    // 当前登录人可能不在可打卡名单里（如已离职），回落到第一个可选员工
+    if (!punchEmployee.value) punchEmployee.value = empOptions.value[0]?.value || ''
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -159,7 +161,11 @@ const columns = computed(() => [
 ])
 
 /* ---------- 打卡 / 补卡 / 报表 ---------- */
-const punchEmployee = ref('')
+/**
+ * 默认选中当前登录人：空字符串会让 a-select 渲染一个空选中项盖住 placeholder，
+ * 看起来像「下拉框没有数据」；有值时打卡对象也一目了然。
+ */
+const punchEmployee = ref(auth.user?.employee_id || '')
 async function punch(type: 'in' | 'out'): Promise<void> {
   const employeeId = punchEmployee.value || auth.user?.employee_id || employees.value[0]?.id || CURRENT_USER_ID
   await submitTool('attendance.checkin', {
