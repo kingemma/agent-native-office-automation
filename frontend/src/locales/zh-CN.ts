@@ -30,6 +30,11 @@ export default {
     noneOk: '两个地址都不可达，请检查服务与网络',
     autoHint: '登录时先探测局域网，失败自动切到外网；配置保存在本机。',
     noServer: '无法连接服务器：请检查局域网 / 外网地址与服务状态',
+    downloadTitle: '客户端下载', downloadHint: '安装包与服务端必须同版本；其它平台由 GitHub Actions 构建后陆续提供',
+  },
+  downloads: {
+    windows: 'Windows 桌面端', macos: 'macOS', linux: 'Linux',
+    android: 'Android', ios: 'iOS', server: 'Windows 服务端', comingSoon: '即将推出',
   },
   role: {
     admin: '管理员', hr: '人事', finance: '财务', manager: '部门经理', employee: '员工',
@@ -315,6 +320,7 @@ export default {
     sec5: '降级可用：服务端不可达时各页面呈现可重试错误态；Agent 在无模型时降级为本地意图引擎。',
     disclaimer: '说明：本前端通过 bridge.ts 统一走 Axum HTTP（五端同一套接口）；后端未启动时，各页面会显示可重试的错误态而非白屏。',
   },
+  columns: { label: '列设置', title: '自定义列', reset: '恢复默认' },
   features: {
     title: '功能验收', desc: '以下验收点与后端 domain::FEATURES 同一份常量，作为能力回归清单。',
     total: '{n} 项验收点', done: '已实现',

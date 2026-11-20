@@ -32,6 +32,11 @@ export default {
     noneOk: 'Neither address is reachable — check the service and network',
     autoHint: 'On sign-in the LAN endpoint is probed first and falls back to WAN automatically. Saved on this device.',
     noServer: 'Cannot reach the server — check the LAN / WAN addresses and service status',
+    downloadTitle: 'Download clients', downloadHint: 'The client and server must share the same version. Other platforms are built by GitHub Actions progressively.',
+  },
+  downloads: {
+    windows: 'Windows Desktop', macos: 'macOS', linux: 'Linux',
+    android: 'Android', ios: 'iOS', server: 'Windows Server', comingSoon: 'Coming soon',
   },
   role: {
     admin: 'Admin', hr: 'HR', finance: 'Finance', manager: 'Manager', employee: 'Employee',

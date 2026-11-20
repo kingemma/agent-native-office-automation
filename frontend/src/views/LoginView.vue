@@ -13,8 +13,21 @@ const { t } = useI18n()
 
 const form = reactive({ username: 'evan', password: 'oa123456' })
 const serverOpen = ref(false)
+const dlOpen = ref(false)
 const testMsg = ref('')
 const testOk = ref(false)
+
+/** 各平台安装包下载：URL 缺省指向 GitHub Releases，可用 VITE_RELEASE_BASE 覆盖 */
+const RELEASE = import.meta.env.VITE_RELEASE_BASE
+  ?? 'https://github.com/kingemma/agent-native-office-automation/releases/latest'
+const downloads: { id: string; icon: string; href: string }[] = [
+  { id: 'windows', icon: 'monitor', href: RELEASE },
+  { id: 'macos', icon: 'laptop', href: '' },
+  { id: 'linux', icon: 'cpu', href: '' },
+  { id: 'android', icon: 'phone', href: '' },
+  { id: 'ios', icon: 'phone', href: '' },
+  { id: 'server', icon: 'disc', href: `${RELEASE}/download/oa-server.exe` },
+]
 
 /** 手动测试两套地址：结果只做提示，登录时仍会自动重新探测 */
 async function testServer(): Promise<void> {
@@ -141,6 +154,31 @@ async function submit(): Promise<void> {
             </button>
           </div>
         </div>
+
+        <!-- 各平台客户端下载 -->
+        <div class="lc-dl">
+          <button type="button" class="lc-server-head" @click="dlOpen = !dlOpen">
+            <Icon name="disc" :size="14" />
+            <span>{{ t('auth.downloadTitle') }}</span>
+            <span class="lc-chevron">{{ dlOpen ? '▴' : '▾' }}</span>
+          </button>
+          <div v-if="dlOpen" class="lc-dl-body">
+            <p class="lc-hint">{{ t('auth.downloadHint') }}</p>
+            <div class="lc-dl-list">
+              <template v-for="d in downloads" :key="d.id">
+                <a v-if="d.href" :href="d.href" target="_blank" rel="noopener" class="lc-dl-item">
+                  <Icon :name="d.icon" :size="15" />
+                  <span>{{ t('downloads.' + d.id) }}</span>
+                </a>
+                <span v-else class="lc-dl-item disabled">
+                  <Icon :name="d.icon" :size="15" />
+                  <span>{{ t('downloads.' + d.id) }}</span>
+                  <em class="lc-dl-soon">{{ t('downloads.comingSoon') }}</em>
+                </span>
+              </template>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="login-foot">v0.9.0 · Rig 0.46 · Tauri 2.0 · Axum</div>
     </div>
@@ -261,6 +299,18 @@ async function submit(): Promise<void> {
 .lc-test.bad { color: #cf1322; }
 .lc-hint { margin: 0 0 4px; font-size: 11.5px; color: var(--oa-muted); line-height: 1.6; }
 .lc-base { margin: 0; font-size: 11px; color: var(--oa-muted); font-family: monospace; word-break: break-all; }
+.lc-dl { margin-top: 16px; border: 1px solid var(--oa-border); border-radius: 10px; overflow: hidden; }
+.lc-dl-body { padding: 12px; border-top: 1px dashed var(--oa-border); }
+.lc-dl-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.lc-dl-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; font-size: 12.5px; border-radius: 8px;
+  border: 1px solid var(--oa-border); background: #f7f8fa; color: var(--oa-text, #1f2329);
+  text-decoration: none; transition: all 0.15s;
+}
+.lc-dl-item:not(.disabled):hover { border-color: var(--oa-primary); color: var(--oa-primary); }
+.lc-dl-item.disabled { opacity: 0.55; cursor: default; }
+.lc-dl-soon { font-style: normal; font-size: 10.5px; color: var(--oa-muted); }
 @media (max-width: 980px) {
   .login-page { grid-template-columns: 1fr; }
   .login-brand { display: none; }

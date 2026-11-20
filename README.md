@@ -313,6 +313,7 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 | `VITE_API_BASE` | `http://127.0.0.1:8787` | 兜底地址：登录页未配置时使用 |
 | `VITE_API_LAN` | 同 `VITE_API_BASE` | 局域网地址默认值（登录页可改，落 localStorage） |
 | `VITE_API_WAN` | 同 `VITE_API_BASE` | 外网地址默认值（登录页可改，落 localStorage） |
+| `VITE_RELEASE_BASE` | 仓库 `releases/latest` | 登录页「客户端下载」的下载基址（桌面端跳发布页，服务端直链 `download/oa-server.exe`） |
 
 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OA_MODEL` 只是**回退**：管理员在「模型设置」里保存过配置后
 以界面配置为准；`OA_AGENT_MODE=local` 则始终强制离线意图引擎，忽略以上所有模型配置。
