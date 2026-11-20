@@ -258,12 +258,106 @@ pub fn build_client(cfg: &LlmConfig) -> Result<OpenAI> {
         .client())
 }
 
-/// 连通性自检：用当前配置发一次最小对话，失败信息直接回给管理员
-pub async fn probe(store: &Store) -> Result<String> {
-    let eff = effective(store).await?;
-    let cfg = eff
-        .config
-        .ok_or_else(|| anyhow!("尚未配置模型：请选择提供商并填写 Base URL、模型名与 API Key"))?;
+/// 截断超长文本：错误信息只留一屏看得完的部分
+fn brief(text: &str, max: usize) -> String {
+    let t = text.trim();
+    let mut out: String = t.chars().take(max).collect();
+    if t.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// 列出端点上的可用模型（OpenAI 兼容 `GET {base_url}/models`）。
+///
+/// 管理员往往只填了 Base URL 就想知道该选哪个模型名，所以 `api_key` 留空时
+/// 沿用已存 Key——这样改 Base URL 不必先把 Key 重新输一遍。
+pub async fn list_models(store: &Store, base_url: &str, api_key: &str) -> Result<Vec<String>> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(anyhow!("请先填写 Base URL"));
+    }
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err(anyhow!("Base URL 必须以 http:// 或 https:// 开头"));
+    }
+    let key = if api_key.trim().is_empty() {
+        stored_config(store).await?.map(|c| c.api_key).unwrap_or_default()
+    } else {
+        api_key.trim().to_string()
+    };
+
+    let url = format!("{base}/models");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .context("创建 HTTP 客户端失败")?;
+    let mut req = client.get(&url);
+    if !key.is_empty() {
+        req = req.bearer_auth(&key);
+    }
+    let res = req.send().await.with_context(|| format!("请求 {url} 失败"))?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow!("{url} 返回 {status}：{}", brief(&body, 200)));
+    }
+    let payload: Value = serde_json::from_str(&body)
+        .with_context(|| format!("{url} 返回的不是合法 JSON：{}", brief(&body, 120)))?;
+
+    // 标准 OpenAI 把列表放在 data[].id；少数兼容实现直接给顶层数组或 models[]
+    let rows = payload
+        .get("data")
+        .or_else(|| payload.get("models"))
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut models: Vec<String> = rows
+        .iter()
+        .filter_map(|r| {
+            r.get("id")
+                .or_else(|| r.get("name"))
+                .or_else(|| r.get("model"))
+                .and_then(Value::as_str)
+                .or_else(|| r.as_str())
+                .map(str::to_string)
+        })
+        .filter(|m| !m.trim().is_empty())
+        .collect();
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+/// 连通性自检：用「表单当前值」发一次最小对话，失败信息直接回给管理员。
+///
+/// 入参留空时回落到已存配置，因此「只改了 Base URL 还没保存就点测试」也能测到新地址。
+pub async fn probe(
+    store: &Store,
+    base_url: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<String> {
+    let stored = effective(store).await?.config;
+    let pick = |given: &str, saved: Option<&str>| {
+        if given.trim().is_empty() {
+            saved.unwrap_or("").trim().to_string()
+        } else {
+            given.trim().to_string()
+        }
+    };
+    let cfg = LlmConfig {
+        provider: stored
+            .as_ref()
+            .map(|c| c.provider.clone())
+            .unwrap_or_else(|| "custom".to_string()),
+        base_url: pick(base_url, stored.as_ref().map(|c| c.base_url.as_str())),
+        model: pick(model, stored.as_ref().map(|c| c.model.as_str())),
+        api_key: pick(api_key, stored.as_ref().map(|c| c.api_key.as_str())),
+    };
+    if cfg.base_url.is_empty() || cfg.model.is_empty() {
+        return Err(anyhow!("尚未配置模型：请选择提供商并填写 Base URL、模型名与 API Key"));
+    }
 
     let client = build_client(&cfg)?;
     let agent = AgentBuilder::new(client.completion(cfg.model.clone()))

@@ -231,9 +231,12 @@ body {
 .agent-chat .ant-card-body { padding: 0; }
 .agent-chat-body { height: 380px; overflow-y: auto; padding: 16px; background: #fafbfe; }
 .agent-workbench.is-compact .agent-chat-body { height: 300px; }
-/* 全屏形态：整页锁在视口内（顶栏 60 + 上下留白 70），对话区吃掉剩余高度并内部滚动。
+/* 全屏形态：不再用 100vh 减魔数（顶栏高度一改就错位），
+   而是让内容区变成 flex 容器、工作台吃掉整块剩余高度并内部滚动。
    原先固定 380px 且页面整体超长，发送后浏览器把输入框滚进视野，回复正文被顶出屏幕。 */
-.agent-workbench:not(.is-compact) { height: calc(100vh - 130px); min-height: 480px; display: flex; flex-direction: column; }
+.oa-content.is-flush { display: flex; flex-direction: column; overflow: hidden; padding: 16px 24px 20px; }
+.oa-content.is-flush > * { flex: 1; min-height: 0; }
+.agent-workbench:not(.is-compact) { height: 100%; min-height: 480px; display: flex; flex-direction: column; }
 .agent-workbench:not(.is-compact) .agent-layout { flex: 1; min-height: 0; align-items: stretch; }
 .agent-workbench:not(.is-compact) .agent-chat { height: 100%; min-height: 0; }
 .agent-workbench:not(.is-compact) .agent-chat .ant-card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -243,6 +246,8 @@ body {
 /* 输入区与快捷指令是对话区的固定开销，全屏时压到最小，把高度还给回复 */
 .agent-workbench:not(.is-compact) .agent-composer textarea { min-height: 64px; }
 .agent-workbench:not(.is-compact) .agent-quick-chips { flex-wrap: nowrap; overflow-x: auto; max-height: none; }
+/* 单行不换行时禁止压缩：否则窄屏上快捷指令会被挤成竖排单字，此时应横向滚动 */
+.agent-workbench:not(.is-compact) .agent-quick-chips .agent-chip { flex: none; }
 .agent-msg { display: flex; gap: 10px; margin-bottom: 16px; align-items: flex-start; }
 .agent-msg.is-user { flex-direction: row-reverse; }
 .agent-msg-av { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; }
@@ -346,6 +351,12 @@ body {
   .org-children { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .oa-search { width: 180px; }
   .cap-grid, .g-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 单列堆叠后锁死视口会把右栏挤没：整页滚动，对话区回到固定高度 */
+  .oa-content.is-flush { overflow-y: auto; }
+  .oa-content.is-flush > * { flex: none; }
+  .agent-workbench:not(.is-compact) { height: auto; min-height: 0; }
+  .agent-workbench:not(.is-compact) .agent-chat-body { height: 50vh; flex: none; }
+  .agent-workbench:not(.is-compact) .agent-side { overflow: visible; }
 }
 @media (max-width: 640px) {
   .oa-sider { width: 64px; }

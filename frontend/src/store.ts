@@ -13,6 +13,7 @@ import {
   callTool,
   getToken,
   listTools,
+  type ChatTurn,
   login as apiLogin,
   logout as apiLogout,
   me as apiMe,
@@ -238,6 +239,9 @@ function pushMsg(
 
 /* ---------------- Agent 会话 ---------------- */
 
+/** 随每次请求带回的历史轮数上限，与服务端 `MAX_HISTORY_TURNS` 保持一致 */
+const HISTORY_TURNS = 20
+
 const SENSITIVE = [
   'hr.offboard', 'hr.promote', 'finance.claim.approve',
   'contract.create', 'contract.approve', 'attendance.approve',
@@ -274,6 +278,12 @@ export async function sendAgent(text: string): Promise<void> {
   }
   session.error = ''
   session.plan = null
+  // 上下文：本轮之前的对话（只取文本）随请求提交，服务端不保存会话状态。
+  // 必须在 push 本轮用户消息之前采样，否则当前问句会重复出现在历史里。
+  const history: ChatTurn[] = session.messages
+    .filter((m) => m.text.trim())
+    .slice(-HISTORY_TURNS)
+    .map((m) => ({ role: m.role, text: m.text }))
   pushMsg('user', cmd)
   session.running = true
   session.trace = []
@@ -283,7 +293,7 @@ export async function sendAgent(text: string): Promise<void> {
     // 用对象承接回调里的赋值：闭包内的赋值不参与 TS 的控制流收窄
     const holder: { reply: AgentReply | null } = { reply: null }
     let streamError = ''
-    await agentStream(cmd, (event) => {
+    await agentStream(cmd, history, (event) => {
       if (event.type === 'think') {
         msg.thinking?.push({ stage: event.stage, text: event.text })
       } else if (event.type === 'delta') {

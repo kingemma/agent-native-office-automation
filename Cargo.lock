@@ -5599,6 +5599,7 @@ dependencies = [
  "chrono",
  "futures",
  "regex",
+ "reqwest 0.13.5",
  "rig",
  "serde",
  "serde_json",

@@ -263,8 +263,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           </a-dropdown>
         </header>
 
-        <!-- 内容：按 activePage 切换视图 -->
-        <main class="oa-content">
+        <!-- 内容：按 activePage 切换视图。is-flush 让 Agent 页自己吃掉整块剩余视口 -->
+        <main class="oa-content" :class="{ 'is-flush': app.activePage === 'agent' }">
           <component :is="currentView" :key="app.activePage" />
         </main>
       </div>

@@ -68,12 +68,21 @@ export interface AgentReply {
   needs_confirmation?: boolean
 }
 
-/** GET /api/agent/stream 的 SSE 帧 */
+/** GET / POST /api/agent/stream 的 SSE 帧 */
 export type AgentEvent =
   | { type: 'think'; stage: string; text: string }
   | { type: 'delta'; text: string }
   | { type: 'reply'; reply: AgentReply }
   | { type: 'error'; message: string }
+
+/**
+ * 一轮历史对话：服务端不保存会话，多轮追问靠在每次请求里带上最近若干轮。
+ * 只传文本，工具调用细节不回灌给模型。
+ */
+export interface ChatTurn {
+  role: 'user' | 'agent'
+  text: string
+}
 
 export interface AgentPlan {
   steps: PlanStep[]
@@ -263,9 +272,27 @@ export async function saveLlmSettings(input: LlmSettingsInput): Promise<LlmSetti
   return httpPost<LlmSettingsView>('/api/settings/llm', input)
 }
 
-/** 连通性自检：用当前配置发一次最小对话 */
-export async function testLlmSettings(): Promise<{ ok: boolean; reply: string }> {
-  return httpPost<{ ok: boolean; reply: string }>('/api/settings/llm/test', {})
+/** 连通性自检的入参：留空字段由服务端回落到已存配置 */
+export interface LlmProbeInput {
+  base_url: string
+  model: string
+  api_key: string
+}
+
+/** 连通性自检：用表单当前值发一次最小对话 */
+export async function testLlmSettings(
+  input: LlmProbeInput,
+): Promise<{ ok: boolean; reply: string }> {
+  return httpPost<{ ok: boolean; reply: string }>('/api/settings/llm/test', input)
+}
+
+/** 列出端点上的可用模型（服务端代理 `GET {base_url}/models`），供模型名下拉使用 */
+export async function listLlmModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const data = await httpPost<unknown>('/api/settings/llm/models', {
+    base_url: baseUrl,
+    api_key: apiKey,
+  })
+  return rowsFrom<string>(data, 'models')
 }
 
 /* ---------------- 业务 API ---------------- */
@@ -290,18 +317,21 @@ export async function agentChat(message: string): Promise<AgentReply> {
 /**
  * 流式对话：逐条读 SSE 帧并回调。
  *
- * 不用 `EventSource`——它无法携带 `Authorization: Bearer`，而本项目的登录态
- * 全部走请求头、没有 cookie 会话；因此用 `fetch` 的 ReadableStream 手工拆帧。
+ * 不用 `EventSource`——它无法携带 `Authorization: Bearer`，也无法带请求体，
+ * 而多轮追问需要把历史一并提交；因此用 `fetch` 的 ReadableStream 手工拆帧。
  */
 export async function agentStream(
   message: string,
+  history: ChatTurn[],
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(
-    `${getBase()}/api/agent/stream?q=${encodeURIComponent(message)}`,
-    { headers: authHeaders(), signal },
-  )
+  const res = await fetch(`${getBase()}/api/agent/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ message, history }),
+    signal,
+  })
   if (res.status === 401) {
     setToken('')
     throw new Error('UNAUTHORIZED')

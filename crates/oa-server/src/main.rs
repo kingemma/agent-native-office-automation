@@ -173,6 +173,9 @@ async fn set_user_active(
 #[derive(Deserialize)]
 struct MessageReq {
     message: String,
+    /// 本轮之前的对话，服务端不再自己保存会话状态
+    #[serde(default)]
+    history: Vec<agent::ChatTurn>,
 }
 
 async fn chat(
@@ -181,7 +184,15 @@ async fn chat(
     Json(req): Json<MessageReq>,
 ) -> Result<Json<agent::AgentReply>, ApiError> {
     let user = require_user(&st, &headers).await?;
-    let reply = agent::run(st.app, &user, &req.message).await.map_err(err500)?;
+    let reply = agent::run_stream_with_history(
+        st.app,
+        &user,
+        &req.message,
+        &req.history,
+        agent::Thinker::silent(),
+    )
+    .await
+    .map_err(err500)?;
     Ok(Json(reply))
 }
 
@@ -190,27 +201,23 @@ struct StreamQuery {
     q: String,
 }
 
-/// 流式对话：把 Agent 的思考步骤按 SSE 逐条推给前端。
-///
-/// 用 GET + query 而不是 POST，是为了让浏览器 `EventSource` 也能接；
-/// 但本项目登录态走 `Authorization: Bearer`（EventSource 不支持自定义头），
-/// 因此前端实际用 `fetch` + `ReadableStream` 读这个流。
-async fn agent_stream(
-    State(st): State<WebState>,
-    headers: HeaderMap,
-    Query(query): Query<StreamQuery>,
-) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError> {
-    let user = require_user(&st, &headers).await?;
-    let message = query.q.trim().to_string();
-    if message.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
-    }
-
+/// 把 Agent 的执行过程包成 SSE：思考步骤边执行边推，最后一帧是完整回复或错误。
+fn agent_sse(
+    app: AppState,
+    user: SessionUser,
+    message: String,
+    history: Vec<agent::ChatTurn>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<agent::AgentEvent>();
-    let app = st.app.clone();
     tokio::spawn(async move {
-        let result =
-            agent::run_stream(app, &user, &message, agent::Thinker::streaming(tx.clone())).await;
+        let result = agent::run_stream_with_history(
+            app,
+            &user,
+            &message,
+            &history,
+            agent::Thinker::streaming(tx.clone()),
+        )
+        .await;
         // 收尾帧：成功给完整回复，失败给错误文本，前端据此结束本轮
         let last = match result {
             Ok(reply) => agent::AgentEvent::Reply { reply },
@@ -224,7 +231,36 @@ async fn agent_stream(
             .unwrap_or_else(|_| r#"{"type":"error","message":"事件序列化失败"}"#.to_string());
         Ok(Event::default().data(data))
     });
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// 流式对话（GET 兼容口）：单轮，不带历史，仅用于调试与 EventSource 类客户端。
+async fn agent_stream(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<StreamQuery>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let message = query.q.trim().to_string();
+    if message.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
+    }
+    Ok(agent_sse(st.app, user, message, Vec::new()))
+}
+
+/// 流式对话（POST 主口）：请求体带上最近若干轮历史，模型才能接着上文回答。
+/// 用 POST 是因为历史放不进 query string，长度与转义都不可控。
+async fn agent_stream_post(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<MessageReq>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let message = req.message.trim().to_string();
+    if message.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "指令不能为空".to_string()));
+    }
+    Ok(agent_sse(st.app, user, message, req.history))
 }
 
 async fn plan(
@@ -458,17 +494,52 @@ async fn save_llm_settings(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+/// 测试连接：默认用表单当前值（留空回落到已存配置），
+/// 这样「改了 Base URL 还没保存就点测试」测到的是新地址。
+#[derive(Deserialize, Default)]
+struct LlmProbeReq {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    api_key: String,
+}
+
 async fn test_llm_settings(
     State(st): State<WebState>,
     headers: HeaderMap,
+    Json(req): Json<LlmProbeReq>,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&st, &headers).await?;
     require_admin(&user)?;
     // `{e:#}` 展开 anyhow 因果链，管理员能看到是连接被拒还是 401
-    let reply = agent::llm::probe(&st.app.store)
+    let reply = agent::llm::probe(&st.app.store, &req.base_url, &req.model, &req.api_key)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     Ok(Json(json!({ "ok": true, "reply": reply })))
+}
+
+/// 列出端点上的可用模型（`GET {base_url}/models`），给「模型名」下拉用。
+#[derive(Deserialize, Default)]
+struct LlmModelsReq {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    api_key: String,
+}
+
+async fn list_llm_models(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<LlmModelsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    require_admin(&user)?;
+    let models = agent::llm::list_models(&st.app.store, &req.base_url, &req.api_key)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(json!({ "models": models })))
 }
 
 async fn features() -> Json<Value> {
@@ -505,7 +576,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(users))
         .route("/api/users/{employee_id}/active", post(set_user_active))
         .route("/api/agent/chat", post(chat))
-        .route("/api/agent/stream", get(agent_stream))
+        .route("/api/agent/stream", get(agent_stream).post(agent_stream_post))
         .route("/api/agent/plan", post(plan))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/call", post(call_tool))
@@ -520,6 +591,7 @@ async fn main() -> anyhow::Result<()> {
             get(get_llm_settings).post(save_llm_settings),
         )
         .route("/api/settings/llm/test", post(test_llm_settings))
+        .route("/api/settings/llm/models", post(list_llm_models))
         .route("/api/features", get(features))
         // base64 会把体积放大 4/3，10 MB 附件需要 ~14 MB body
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))

@@ -30,3 +30,6 @@ async-trait = "0.1"
 futures = "0.3"
 # 密码摘要（纯 Rust，无需 C 工具链；版本已在 tauri 依赖树中存在）
 sha2 = "0.10"
+# 查 `{base_url}/models`（OpenAI 兼容端点）给模型名下拉用。版本与 rig 的传输层一致，
+# 直接复用同一份已编译的 reqwest；TLS 后端由上面的 feature 经 rig 传递进来。
+reqwest = { version = "0.13", default-features = false, features = ["json"] }

@@ -26,12 +26,14 @@ pub use intent::{AgentReply, PlanStep, ThinkStep, TraceEntry};
 use crate::auth::SessionUser;
 use crate::AppState;
 use anyhow::{anyhow, Result};
+use chrono::{Datelike, Local};
 use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
+use rig::completion::Message;
 use rig::streaming::{Item, StreamEvent};
 use rig::tool::ToolContext;
 use rig::AgentBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const PREAMBLE: &str = r#"你是「驭工 OA」的智能办公 Agent，可以代替用户操作人事、财务、合同、考勤、资产的全部流程。
@@ -49,6 +51,23 @@ const PREAMBLE: &str = r#"你是「驭工 OA」的智能办公 Agent，可以代
    user_id / tenant_id；权限不足时如实告知用户，不要尝试绕过。
 
 组织上下文：财年 2026；费用预算由 finance.summary 查询。"#;
+
+/// 「今天是几号、周几」提示。
+///
+/// 模型自身没有系统时钟，不注入基准日期时遇到「下周一」只能回头问用户，
+/// 而用户已经在上一轮说过「下周入职」——把日期给足，模型直接换算成 YYYY-MM-DD。
+fn today_hint() -> String {
+    const WEEKDAYS: [&str; 7] =
+        ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    let now = Local::now();
+    let weekday = WEEKDAYS[now.weekday().num_days_from_monday() as usize];
+    format!(
+        "今天是 {}（{}）。用户说「下周」「下周一」「月底」这类相对日期时，\
+         按这个基准换算成具体日期（YYYY-MM-DD）再调用工具，不要反问用户。",
+        now.format("%Y-%m-%d"),
+        weekday
+    )
+}
 
 /// 解析运行模式：显式 `OA_AGENT_MODE` 优先，否则有可用模型配置就走 LLM。
 fn desired_mode(has_config: bool) -> &'static str {
@@ -117,17 +136,56 @@ impl Thinker {
     }
 }
 
-/// 单次对话入口（非流式）。桌面/移动端经 Tauri command 调用，服务端经 Axum 路由调用。
-pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<AgentReply> {
-    run_stream(state, user, message, Thinker::silent()).await
+/// 一轮历史对话。
+///
+/// 只回传角色与纯文本：工具调用的原始 JSON 不回灌给模型，既避免上下文膨胀，
+/// 也避免上一轮的工具结果被模型当成新一轮的事实重复使用。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatTurn {
+    /// `user` 或 `agent`（其余值按 assistant 处理）
+    pub role: String,
+    pub text: String,
 }
 
-/// 流式入口：思考步骤边执行边推给 `thinker`，返回值里也带一份完整记录，
-/// 这样 `/api/agent/chat` 与 `/api/agent/stream` 共用同一条执行路径。
+/// 最多带回的历史轮数：再多对追问帮助有限，只会推高 token 与首字延迟。
+const MAX_HISTORY_TURNS: usize = 20;
+/// 单轮历史正文上限（按字符截断），长报告不需要全文进上下文。
+const MAX_HISTORY_CHARS: usize = 2000;
+
+/// 单次对话入口（非流式）。服务端经 Axum 路由调用。
+pub async fn run(state: AppState, user: &SessionUser, message: &str) -> Result<AgentReply> {
+    run_with_history(state, user, message, &[], Thinker::silent()).await
+}
+
+/// 流式入口（不带历史），保留给只取单轮结果的调用方。
 pub async fn run_stream(
     state: AppState,
     user: &SessionUser,
     message: &str,
+    thinker: Thinker,
+) -> Result<AgentReply> {
+    run_with_history(state, user, message, &[], thinker).await
+}
+
+/// 带历史的流式入口：`history` 是本轮之前已经发生的对话，按时间正序。
+///
+/// 没有它，每一轮都是全新提示词，模型会反复追问用户已经回答过的信息——
+/// 这正是「补充完信息后又要求提供姓名/职位/月薪」的根因。
+pub async fn run_stream_with_history(
+    state: AppState,
+    user: &SessionUser,
+    message: &str,
+    history: &[ChatTurn],
+    thinker: Thinker,
+) -> Result<AgentReply> {
+    run_with_history(state, user, message, history, thinker).await
+}
+
+async fn run_with_history(
+    state: AppState,
+    user: &SessionUser,
+    message: &str,
+    history: &[ChatTurn],
     mut thinker: Thinker,
 ) -> Result<AgentReply> {
     let effective = llm::effective(&state.store).await?;
@@ -141,9 +199,12 @@ pub async fn run_stream(
         .map(|c| format!("{}/{}", c.provider, c.model))
         .unwrap_or_else(|| "llm".to_string());
     thinker.say("route", format!("使用模型 {label} 推理并调用工具"));
+    if !history.is_empty() {
+        thinker.say("llm", format!("携带最近 {} 轮对话作为上下文", history.len()));
+    }
 
     let before = state.store.last_audit_id().await.unwrap_or(0);
-    match run_llm(state.clone(), user, message, effective.config, &mut thinker).await {
+    match run_llm(state.clone(), user, message, history, effective.config, &mut thinker).await {
         Ok(mut reply) => {
             reply.thinking = thinker.snapshot();
             Ok(reply)
@@ -192,6 +253,7 @@ async fn run_llm(
     state: AppState,
     user: &SessionUser,
     message: &str,
+    history: &[ChatTurn],
     config: Option<llm::LlmConfig>,
     thinker: &mut Thinker,
 ) -> Result<AgentReply> {
@@ -206,7 +268,7 @@ async fn run_llm(
     let before = state.store.last_audit_id().await?;
 
     let agent = AgentBuilder::new(client.completion(cfg.model.clone()))
-        .preamble(PREAMBLE)
+        .preamble(format!("{PREAMBLE}\n\n{}", today_hint()))
         .default_max_turns(10)
         .tool(tools::HrOnboard { state: state.clone(), user: user.clone() })
         .tool(tools::HrOffboard { state: state.clone(), user: user.clone() })
@@ -233,13 +295,35 @@ async fn run_llm(
         format!("已提交给 {}，单轮最多 10 次工具调用", cfg.model),
     );
 
+    // 历史按时间正序转成 rig 消息；超长只留最近 N 轮，空正文直接丢弃（占位气泡、被取消的回复）
+    let recent = &history[history.len().saturating_sub(MAX_HISTORY_TURNS)..];
+    let history_msgs: Vec<Message> = recent
+        .iter()
+        .filter_map(|turn| {
+            let text = turn.text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let text: String = text.chars().take(MAX_HISTORY_CHARS).collect();
+            Some(if turn.role == "user" {
+                Message::user(text)
+            } else {
+                Message::assistant(text)
+            })
+        })
+        .collect();
+
     // 走流式：文本增量边生成边推给前端，工具调用轮次由 rig 的 drive_agent 内部驱动，
     // 与阻塞版共用同一套工具执行和审计逻辑，只是多了 delta 事件。
-    let mut stream = agent
+    let runner = agent
         .prompt(message)
         .tool_context(ToolContext::new())
-        .max_turns(10)
-        .stream();
+        .max_turns(10);
+    let mut stream = if history_msgs.is_empty() {
+        runner.stream()
+    } else {
+        runner.history(history_msgs).stream()
+    };
 
     let mut text = String::new();
     let mut reasoning = String::new();
