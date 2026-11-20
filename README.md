@@ -1,7 +1,7 @@
 # 驭工 OA · Agent-Native Office Automation
 
 用自然语言驱动全部办公流程的 OA 系统：人事、财务、合同、考勤、资产五大业务域共用
-19 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（SQLite / Postgres）并写审计。
+20 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（SQLite / Postgres）并写审计。
 
 - **前端**：Vue 3 + TypeScript + Ant Design Vue 4 + vue-i18n + Pinia
 - **后端**：Rust 1.97+ · Axum 0.8 · Rig 0.46（LLM 编排）· sqlx 0.8（SQLite / Postgres 双后端）
@@ -23,14 +23,14 @@
 |---|---|
 | ![人事管理](docs/screenshots/hr.png) | ![财务管理](docs/screenshots/finance.png) |
 
-**系统架构**：技术选型、分层架构与 19 个工具的协议一览。
+**系统架构**：技术选型、分层架构与 20 个工具的协议一览。
 
 ![系统架构](docs/screenshots/architecture.png)
 
 ## 目录结构
 
 ```
-crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 19 个 Tool · 意图引擎
+crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 20 个 Tool · 意图引擎
 crates/oa-server      Axum REST 服务（认证、Agent、工具、台账、指标、审计、重置）
 src-tauri             Tauri 2.0 薄客户端外壳（窗口/系统集成，业务全部走 REST）
 frontend              生产前端（Vue 3 SFC + Vite），唯一前端事实来源
@@ -175,7 +175,7 @@ pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当�
 
 | 用户名 | 员工 | 角色 | 典型权限 |
 |---|---|---|---|
-| `evan` | E01 周明远 | admin | 全部 19 个工具 |
+| `evan` | E01 周明远 | admin | 全部 20 个工具 |
 | `wuhao` | E10 吴昊 | finance | 报销审批/汇总、合同创建、考勤报表 |
 | `fengxue` | E12 冯雪 | hr | 入职/离职/晋升、资产登记/领用、考勤报表 |
 | `chenli` | E02 陈立 | manager | 报销审批、领用/归还、合同创建、团队数据 |
@@ -186,7 +186,7 @@ RBAC 在服务端执行（`crates/oa-core/src/auth.rs` 的 `can_use` 矩阵）�
 
 ## Agent 运行模式
 
-通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 19 个工具、RBAC 与审计：
+通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 20 个工具、RBAC 与审计：
 
 | 值 | 行为 |
 |---|---|
@@ -213,7 +213,7 @@ Agent 返回 `needs_confirmation` + `pending`，前端确认后带 `confirmed=tr
 | POST | `/api/auth/change-password` | 改密并吊销该账号全部会话 |
 | POST | `/api/agent/chat` | Agent 对话（回复 + 模式 + 轨迹 + 待确认步骤） |
 | POST | `/api/agent/plan` | 计划预览（不写库） |
-| GET | `/api/tools` | 19 个工具及当前角色 `allowed` |
+| GET | `/api/tools` | 20 个工具及当前角色 `allowed` |
 | POST | `/api/tools/call` | 单工具直调（表单写操作统一入口） |
 | POST | `/api/files` | 上传附件/发票图片（base64，`entity_type=claim|contract`） |
 | GET | `/api/files?entity_type=&entity_id=` | 附件列表（按单据） |
@@ -286,11 +286,11 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
   （出勤率 =（正常 + 外勤）/ 出勤天数），并返回待审批补卡数；
 - 行级可见性：普通员工只看本人考勤与本人补卡，HR / 财务 / 经理可看全员。
 
-## 19 个工具
+## 20 个工具
 
 | 域 | 工具 |
 |---|---|
-| 人事 | `hr.onboard` `hr.offboard` `hr.promote` `hr.roster.query` |
+| 人事 | `hr.onboard` `hr.offboard` `hr.promote` `hr.approve` `hr.roster.query` |
 | 组织 | `org.chart` |
 | 财务 | `finance.claim.create` `finance.claim.approve` `finance.summary` |
 | 合同 | `contract.create` `contract.approve` `contract.query` |
@@ -321,7 +321,7 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 
 ```powershell
 .\tools\check.ps1 --workspace --all-targets   # 编译检查（含测试目标）
-cargo test --workspace                         # 48 个单测（oa-core）
+cargo test --workspace                         # 52 个单测（oa-core）
 npm --prefix frontend run build                # vue-tsc + 生产构建
 .\tools\smoke.ps1 -Build                       # 重编译服务端 + 25 项 REST 冒烟（临时库）
 .\tools\tauri.ps1 build --no-bundle            # 桌面 release 构建（离线，出 exe）

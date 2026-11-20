@@ -296,6 +296,7 @@ async fn run_llm(
         .tool(tools::HrOnboard { state: state.clone(), user: user.clone() })
         .tool(tools::HrOffboard { state: state.clone(), user: user.clone() })
         .tool(tools::HrPromote { state: state.clone(), user: user.clone() })
+        .tool(tools::HrApprove { state: state.clone(), user: user.clone() })
         .tool(tools::HrRosterQuery { state: state.clone(), user: user.clone() })
         .tool(tools::OrgChart { state: state.clone(), user: user.clone() })
         .tool(tools::ClaimCreate { state: state.clone(), user: user.clone() })

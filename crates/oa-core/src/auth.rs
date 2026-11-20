@@ -67,6 +67,7 @@ pub fn can_use(role: &str, tool: &str) -> bool {
     }
     let allowed: &[&str] = match tool {
         "hr.onboard" | "hr.offboard" | "hr.promote" => &["hr"],
+        "hr.approve" => &["hr", "manager"],
         "hr.roster.query" | "org.chart" => &["hr", "finance", "manager", "employee"],
         "finance.claim.create" => &["hr", "finance", "manager", "employee"],
         "finance.claim.approve" | "finance.summary" => &["finance", "manager"],

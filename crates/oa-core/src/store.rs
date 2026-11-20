@@ -742,6 +742,13 @@ impl Store {
                 &[],
             )
             .await?;
+        let payroll_cents = self
+            .scalar_i64(
+                "SELECT CAST(COALESCE(SUM(salary_cents),0) AS BIGINT) FROM employees
+                 WHERE status IN ('active','probation')",
+                &[],
+            )
+            .await?;
         let today_total = self
             .scalar_i64("SELECT COUNT(*) FROM attendance WHERE work_date=?1", params![today])
             .await?;
@@ -797,6 +804,7 @@ impl Store {
             "pending_claims": pending,
             "expiring_contracts": expiring,
             "asset_value_cents": asset_value,
+            "payroll_cents": payroll_cents,
             "attendance_rate": attendance_rate,
             "budget_total_cents": budget_total,
             "budget_used_cents": budget_used,

@@ -24,6 +24,7 @@ pub const TOOL_SPECS: &[(&str, &str, &str, &[(&str, &str)])] = &[
     ("hr.onboard", "hr", "创建员工档案并启动入职流程（资料→合同→设备→培训）", &[("name", "string"), ("dept_id", "string"), ("position", "string"), ("entry_date", "string"), ("salary_cents", "integer")]),
     ("hr.offboard", "hr", "发起离职流程、冻结账号、自动回收名下资产、生成交接清单", &[("employee_id", "string"), ("last_day", "string"), ("reason", "string"), ("handover_to", "string")]),
     ("hr.promote", "hr", "晋升/涨薪，写入异动记录并按涨幅分派审批链", &[("employee_id", "string"), ("new_salary_cents", "integer"), ("new_position", "string"), ("effective_date", "string"), ("reason", "string")]),
+    ("hr.approve", "hr", "人事异动单（入职/离职/晋升）逐级审批：通过转交下一级，末级通过才生效，驳回终止", &[("case_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("hr.roster.query", "hr", "按部门、状态、关键词检索员工花名册（排除已离职）", &[("dept_id", "string"), ("status", "string"), ("keyword", "string")]),
     ("org.chart", "org", "返回组织架构树与各节点实时在编人数", &[]),
     ("finance.claim.create", "finance", "创建日常/商务/项目实施报销单，可带费用明细（发票/发生日期），预算占用校验并生成审批链", &[("type", "string"), ("applicant_id", "string"), ("amount_cents", "integer"), ("purpose", "string"), ("project", "string"), ("items", "array")]),
@@ -141,6 +142,7 @@ macro_rules! oa_tool {
 oa_tool!(HrOnboard, "hr.onboard");
 oa_tool!(HrOffboard, "hr.offboard");
 oa_tool!(HrPromote, "hr.promote");
+oa_tool!(HrApprove, "hr.approve");
 oa_tool!(HrRosterQuery, "hr.roster.query");
 oa_tool!(OrgChart, "org.chart");
 oa_tool!(ClaimCreate, "finance.claim.create");
@@ -242,6 +244,30 @@ async fn dept_of(db: &mut dyn Repo, emp: &str) -> Result<String> {
         .to_string())
 }
 
+/// 预算按部门优先、`ALL` 兜底：返回 (实际占用的 dept_id, total_cents, used_cents)。
+/// 创建占用、驳回释放、汇总执行率三处共用同一口径，避免各写各的。
+async fn budget_row(db: &mut dyn Repo, dept: &str) -> Result<(String, i64, i64)> {
+    let year = year().parse::<i64>().unwrap_or(2026);
+    let pick = |rows: Vec<Value>| {
+        rows.first().map(|r| {
+            (r["total_cents"].as_i64().unwrap_or(0), r["used_cents"].as_i64().unwrap_or(0))
+        })
+    };
+    if let Some((t, u)) = pick(
+        db.query_json("SELECT total_cents, used_cents FROM budgets WHERE year=?1 AND dept_id=?2", params![year, dept])
+            .await?,
+    ) {
+        return Ok((dept.to_string(), t, u));
+    }
+    if let Some((t, u)) = pick(
+        db.query_json("SELECT total_cents, used_cents FROM budgets WHERE year=?1 AND dept_id='ALL'", params![year])
+            .await?,
+    ) {
+        return Ok(("ALL".to_string(), t, u));
+    }
+    Ok((dept.to_string(), 0, 0))
+}
+
 /// 员工号对应的直属上级（`employees.manager_id`）。
 async fn manager_of(db: &mut dyn Repo, emp: &str) -> Option<String> {
     db.query_json("SELECT manager_id FROM employees WHERE id=?1", params![emp])
@@ -302,6 +328,41 @@ async fn resolve_approvers(
     // 申请人本身就是唯一候选时兜底到总经理，否则这张单永远没人能审
     if out.is_empty() {
         out.push(boss);
+    }
+    Ok(out)
+}
+
+/// 人事异动审批链 → 具体员工号（不再用「HRBP 冯雪」这类显示名当审批人）。
+/// 入职：直属主管 → HRBP → 行政；离职：直属主管 → HRBP → 行政 → 财务；
+/// 晋升由 `raise_chain` 单独决定（见 hr.promote），这里只兜底。
+async fn hr_chain(db: &mut dyn Repo, emp: &str, dept: &str, kind: &str) -> Result<Vec<String>> {
+    let hrbp = dept_leader(db, "D06").await.unwrap_or_else(|| "E12".to_string());
+    let admin = dept_leader(db, "D07").await.unwrap_or_else(|| "E13".to_string());
+    let finance = dept_leader(db, "D05").await.unwrap_or_else(|| "E10".to_string());
+    let supervisor = resolve_approvers(db, emp, dept, &["直属主管"])
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "E01".to_string());
+    let labels: &[&str] = match kind {
+        "onboard" => &["直属主管", "HRBP", "行政"],
+        "offboard" => &["直属主管", "HRBP", "行政", "财务"],
+        _ => &["直属主管", "HRBP"],
+    };
+    let mut out = Vec::with_capacity(labels.len());
+    for label in labels {
+        let who = match *label {
+            "HRBP" => hrbp.clone(),
+            "行政" => admin.clone(),
+            "财务" => finance.clone(),
+            _ => supervisor.clone(),
+        };
+        if who != emp && !out.contains(&who) {
+            out.push(who);
+        }
+    }
+    if out.is_empty() {
+        out.push("E01".to_string());
     }
     Ok(out)
 }
@@ -410,6 +471,17 @@ fn chrono_stamp() -> String {
     format!("{ms:x}")
 }
 
+/// 生成可扫描的二维码（内容 = 资产编号），返回内联 SVG 字符串。
+/// 存进 `qr_code` 列，前端详情抽屉直接 `v-html` 渲染，无需额外图片服务。
+fn qr_svg(content: &str) -> String {
+    use qrcode::render::svg;
+    let svg = qrcode::QrCode::new(content.as_bytes())
+        .map(|c| c.render::<svg::Color>().build())
+        .unwrap_or_default();
+    // 去掉 `<?xml ...?>` 声明：前端 v-html 按 HTML 渲染，XML 声明会被当成处理指令
+    svg.find("<svg").map(|i| svg[i..].to_string()).unwrap_or(svg)
+}
+
 async fn add_event(
     db: &mut dyn Repo,
     asset: &str,
@@ -500,6 +572,7 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
             "makeup",
             s(&args, &["request_id", "requestId", "makeup_id", "makeupId"]),
         )),
+        "hr.approve" => Some(("hr_case", s(&args, &["case_id", "caseId"]))),
         _ => None,
     };
     if let Some((entity, id)) = approval_target {
@@ -582,6 +655,8 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let position = o(a, &["position"]).unwrap_or_else(|| "员工".into());
             let salary = cents(a, "salary");
             let entry = o(a, &["entry_date", "entryDate"]).unwrap_or_else(|| "".into());
+            // 默认入职日用 Rust 侧算：date('now') 是 SQLite 专有函数，Postgres 下会报错
+            let entry = if entry.is_empty() { today() } else { entry };
             let manager = o(a, &["manager_id", "managerId"]);
 
             if !exists(db, "SELECT 1 FROM departments WHERE id=?1", &dept).await? {
@@ -596,7 +671,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let email = format!("{}@yugong.com", format!("emp{next}").to_lowercase());
             db.execute(
                 "INSERT INTO employees(id,no,name,dept_id,position,status,entry_date,salary_cents,manager_id,email)
-                 VALUES(?1,?2,?3,?4,?5,'probation',COALESCE(NULLIF(?6,''),date('now')),?7,?8,?9)",
+                 VALUES(?1,?2,?3,?4,?5,'probation',?6,?7,?8,?9)",
                 params![id, no, person, dept, position, entry, salary, manager, email],
             ).await?;
 
@@ -604,11 +679,13 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let steps = "offer → 资料收集 → 合同签署 → 设备领用 → 入职培训";
             db.execute(
                 "INSERT INTO hr_cases(id,kind,employee_id,effective_date,reason,status,step_index,steps)
-                 VALUES(?1,'onboard',?2,COALESCE(NULLIF(?3,''),date('now')),?4,'running',1,?5)",
+                 VALUES(?1,'onboard',?2,?3,?4,'running',1,?5)",
                 params![case_id, id, entry, s(a, &["reason"]), steps],
             ).await?;
-            add_flow(db, "hr_case", &case_id, &["HRBP 冯雪", "行政 蒋涛", "直属主管"]).await?;
-            notify(db, "E12", "入职流程待办", &format!("{person} 的合同签署与设备领用待确认"), "hr").await?;
+            let onboard_chain = hr_chain(db, &id, &dept, "onboard").await?;
+            add_flow(db, "hr_case", &case_id, &onboard_chain).await?;
+            let first = onboard_chain.first().cloned().unwrap_or_else(|| "E12".to_string());
+            notify(db, &first, "入职流程待办", &format!("{person} 的合同签署与设备领用待确认"), "hr").await?;
             Ok(json!({
                 "ok": true, "employee_id": id, "employee_no": no, "case_id": case_id,
                 "salary_cents": salary, "steps": steps,
@@ -651,10 +728,14 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  VALUES(?1,'offboard',?2,?3,?4,'running',1,?5)",
                 params![case_id, emp, last_day, reason, steps],
             ).await?;
-            add_flow(db, "hr_case", &case_id, &["直属主管", "HRBP 冯雪", "行政 蒋涛", "财务 吴昊"]).await?;
-            if let Some(to) = &handover {
-                notify(db, to, "离职交接待办", &format!("请与 {emp} 完成工作交接"), "hr").await?;
-            }
+            let dept = dept_of(db, &emp).await?;
+            let offboard_chain = hr_chain(db, &emp, &dept, "offboard").await?;
+            add_flow(db, "hr_case", &case_id, &offboard_chain).await?;
+            // 未指定交接人时通知到直属主管，保证离职交接不会无声无息
+            let handover_to = handover
+                .or_else(|| offboard_chain.first().cloned())
+                .unwrap_or_else(|| "E12".to_string());
+            notify(db, &handover_to, "离职交接待办", &format!("请与 {emp} 完成工作交接"), "hr").await?;
             Ok(json!({
                 "ok": true, "case_id": case_id, "account_frozen": true,
                 "assets_returned": held.len(), "steps": steps,
@@ -687,13 +768,106 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  VALUES(?1,'promote',?2,?3,?4,'running',2,?5)",
                 params![case_id, emp, effective, s(a, &["reason"]), chain.join(" → ")],
             ).await?;
-            add_flow(db, "hr_case", &case_id, &chain[..chain.len().saturating_sub(1)]).await?;
+            // 把「直属主管 → 总经理 …」这类角色标签解析成具体员工号（去掉末尾的「生效」）
+            let dept = dept_of(db, &emp).await?;
+            let labels: Vec<&str> = chain.iter().filter(|l| **l != "生效").map(|l| *l).collect();
+            let approvers = resolve_approvers(db, &emp, &dept, &labels).await?;
+            add_flow(db, "hr_case", &case_id, &approvers).await?;
             Ok(json!({
                 "ok": true, "case_id": case_id, "employee_name": old.1,
                 "old_salary_cents": old.0, "new_salary_cents": new_salary,
                 "delta_cents": new_salary - old.0, "chain": chain,
                 "message": format!("{} 月薪 {:.2} → {:.2} 元，异动单 {} 进入审批",
                     old.1, old.0 as f64 / 100.0, new_salary as f64 / 100.0, case_id)
+            }))
+        }
+
+        "hr.approve" => {
+            let id = need(a, &["case_id", "caseId"], "case_id")?;
+            let decision = o(a, &["decision"]).unwrap_or_else(|| "approve".into());
+            let row = db
+                .query_json("SELECT kind, employee_id, status FROM hr_cases WHERE id=?1", params![id])
+                .await?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("异动单 {id} 不存在"))?;
+            let cur = row["status"].as_str().unwrap_or("");
+            if cur != "running" {
+                bail!("异动单 {id} 当前状态 {cur}，只有进行中的可审批");
+            }
+            let flow = db
+                .query_json(
+                    "SELECT id, step, approver FROM approval_flows
+                     WHERE entity_type='hr_case' AND entity_id=?1 AND status='pending'
+                     ORDER BY step ASC LIMIT 1",
+                    params![id],
+                )
+                .await?;
+            let Some(node) = flow.first() else {
+                bail!("{id} 没有待审批节点，可能已被处理");
+            };
+            let flow_id = node["id"].as_str().unwrap_or_default().to_string();
+            let step = node["step"].as_i64().unwrap_or(1);
+            let approver = node["approver"].as_str().unwrap_or_default().to_string();
+            let stamp = clock::local_datetime();
+            let kind = row["kind"].as_str().unwrap_or("").to_string();
+            let emp = row["employee_id"].as_str().unwrap_or("").to_string();
+
+            if decision == "reject" {
+                db.execute(
+                    "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
+                    params![flow_id, s(a, &["comment"]), stamp],
+                )
+                .await?;
+                db.execute("UPDATE hr_cases SET status='rejected' WHERE id=?1", params![id]).await?;
+                return Ok(json!({
+                    "ok": true, "case_id": id, "status": "rejected", "step": step, "approver": approver,
+                    "message": format!("异动单 {id} 已被第 {step} 级审批人驳回，流程终止")
+                }));
+            }
+
+            db.execute(
+                "UPDATE approval_flows SET status='done', comment=?2, acted_at=?3 WHERE id=?1",
+                params![flow_id, s(a, &["comment"]), stamp],
+            )
+            .await?;
+
+            let next = db
+                .query_json(
+                    "SELECT approver, step FROM approval_flows
+                     WHERE entity_type='hr_case' AND entity_id=?1 AND status='pending'
+                     ORDER BY step ASC LIMIT 1",
+                    params![id],
+                )
+                .await?;
+            if let Some(n) = next.first() {
+                let next_approver = n["approver"].as_str().unwrap_or_default().to_string();
+                let next_step = n["step"].as_i64().unwrap_or(step + 1);
+                notify(
+                    db,
+                    &next_approver,
+                    "人事异动待审批",
+                    &format!("{id} 已通过第 {step} 级，待你审批"),
+                    "hr",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "case_id": id, "status": "running",
+                    "step": step, "approver": approver,
+                    "next_approver": next_approver, "next_step": next_step,
+                    "message": format!("{id} 第 {step} 级审批已通过，转交第 {next_step} 级（{next_approver}）")
+                }));
+            }
+
+            // 末级通过：异动单正式生效，离职才把状态从 leaving 落成 left
+            db.execute("UPDATE hr_cases SET status='approved' WHERE id=?1", params![id]).await?;
+            if kind == "offboard" {
+                db.execute("UPDATE employees SET status='left' WHERE id=?1", params![emp]).await?;
+            }
+            Ok(json!({
+                "ok": true, "case_id": id, "status": "approved",
+                "step": step, "approver": approver, "kind": kind,
+                "message": format!("异动单 {id} 全部审批完成")
             }))
         }
 
@@ -759,18 +933,11 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let purpose = o(a, &["purpose"]).unwrap_or_else(|| "—".into());
             let project = o(a, &["project"]);
 
-            let budget = db.query_json(
-                "SELECT total_cents, used_cents FROM budgets WHERE year=?1 AND dept_id='ALL'",
-                params![year().parse::<i64>().unwrap_or(2026)],
-            ).await?;
-            let budget_row = budget.first();
-            let (total, used) = budget_row
-                .map(|r| (r["total_cents"].as_i64().unwrap_or(0), r["used_cents"].as_i64().unwrap_or(0)))
-                .unwrap_or((0, 0));
+            // 预算按部门优先、ALL 兜底；配了预算就硬拦截：超额直接拒绝（事务回滚，不落库）
+            let (budget_key, total, used) = budget_row(db, &dept).await?;
             let remaining = total - used;
-            // 配了预算就硬拦截：超额直接拒绝（事务回滚，不落库），不再只提示「人工复核」；
-            // 未配预算（无行）时不拦，避免空库/测试环境里所有报销都被拒。
-            let budget_ok = budget_row.is_none() || amount <= remaining;
+            let has_budget = total > 0;
+            let budget_ok = !has_budget || amount <= remaining;
             if !budget_ok {
                 bail!(
                     "预算校验未通过：本年剩余额度 {:.2} 元，本次报销 {:.2} 元，超出 {:.2} 元，请削减金额或走人工特批",
@@ -794,8 +961,8 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             ).await?;
             if budget_ok {
                 db.execute(
-                    "UPDATE budgets SET used_cents=used_cents+?1 WHERE year=?2 AND dept_id='ALL'",
-                    params![amount, year().parse::<i64>().unwrap_or(2026)],
+                    "UPDATE budgets SET used_cents=used_cents+?1 WHERE year=?2 AND dept_id=?3",
+                    params![amount, year().parse::<i64>().unwrap_or(2026), budget_key],
                 ).await?;
             }
             // 费用明细：一条一行，id 用单号做前缀保证可读且唯一
@@ -845,7 +1012,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let decision = o(a, &["decision"]).unwrap_or_else(|| "approve".into());
             let row = db
                 .query_json(
-                    "SELECT status, amount_cents, budget_ok FROM claims WHERE id=?1",
+                    "SELECT status, amount_cents, budget_ok, dept_id FROM claims WHERE id=?1",
                     params![id],
                 )
                 .await?
@@ -885,9 +1052,12 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 .await?;
                 db.execute("UPDATE claims SET status='rejected' WHERE id=?1", params![id]).await?;
                 if row["budget_ok"].as_i64().unwrap_or(0) == 1 {
+                    // 释放到创建时占用的那个预算行（部门优先、ALL 兜底），口径与创建一致
+                    let dept_id = row["dept_id"].as_str().unwrap_or("ALL");
+                    let (key, _, _) = budget_row(db, dept_id).await?;
                     db.execute(
-                        "UPDATE budgets SET used_cents=MAX(0, used_cents-?1) WHERE year=?2 AND dept_id='ALL'",
-                        params![amount_cents, year().parse::<i64>().unwrap_or(2026)],
+                        "UPDATE budgets SET used_cents=MAX(0, used_cents-?1) WHERE year=?2 AND dept_id=?3",
+                        params![amount_cents, year().parse::<i64>().unwrap_or(2026), key],
                     )
                     .await?;
                 }
@@ -967,14 +1137,9 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 params![month],
             ).await?;
             let total = by_kind.iter().map(|r| r["total"].as_i64().unwrap_or(0)).sum::<i64>();
-            let budget = db.query_json(
-                "SELECT total_cents, used_cents FROM budgets WHERE year=?1 AND dept_id='ALL'",
-                params![year().parse::<i64>().unwrap_or(2026)],
-            ).await?;
-            let (bt, bu) = budget
-                .first()
-                .map(|r| (r["total_cents"].as_i64().unwrap_or(0), r["used_cents"].as_i64().unwrap_or(0)))
-                .unwrap_or((0, 0));
+            // 预算执行率按传入部门算（没传就看全公司 ALL）
+            let budget_dept = o(a, &["dept_id", "deptId"]).unwrap_or_else(|| "ALL".into());
+            let (_, bt, bu) = budget_row(db, &budget_dept).await?;
             Ok(json!({
                 "ok": true, "month": month, "total_cents": total,
                 "by_kind": by_kind, "by_dept": by_dept,
@@ -1151,11 +1316,13 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  ORDER BY expire_date LIMIT 200",
                 params![status, kw],
             ).await?;
+            // 到期窗口用 Rust 侧算：date('now') / date('now','+N day') 是 SQLite 专有
+            let (from, to) = (today(), clock::date_offset(days));
             let expiring = db.query_json(
                 "SELECT * FROM contracts WHERE status <> 'archived'
-                   AND expire_date BETWEEN date('now') AND date('now','+'||?1||' day')
+                   AND expire_date BETWEEN ?1 AND ?2
                  ORDER BY expire_date",
-                params![days],
+                params![from, to],
             ).await?;
             Ok(json!({
                 "ok": true, "count": rows.len(), "rows": rows,
@@ -1173,7 +1340,6 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let time = o(a, &["time"]).unwrap_or_else(|| now_hhmm());
             let time = if time.is_empty() { now_hhmm() } else { time };
             let source = o(a, &["source"]).unwrap_or_else(|| "agent".into());
-            let status = domain::punch_status(kind, &time);
             let date = today();
 
             let prior = db.query_json(
@@ -1186,11 +1352,11 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 .unwrap_or((None, None));
             let (ci, co) = if kind == "out" { (ci, Some(time.clone())) } else { (Some(time.clone()), co) };
             let hours = domain::work_hours(ci.as_deref(), co.as_deref());
-            let final_status = if status == "normal" && ci.is_some() && co.is_some() {
-                "normal"
-            } else {
-                status
-            };
+            // 迟到优先：只要上班是迟到，即使下班正常 / 早退也记迟到，
+            // 避免「打下班卡把上午的迟到冲掉」导致迟到统计失真（与 attendance.approve 同口径）
+            let in_status = ci.as_deref().map(|t| domain::punch_status("in", t)).unwrap_or("normal");
+            let out_status = co.as_deref().map(|t| domain::punch_status("out", t)).unwrap_or("normal");
+            let final_status = if in_status != "normal" { in_status } else { out_status };
             let id = next_id(db, "attendance", "AT", 4).await?;
             db.execute(
                 "INSERT INTO attendance(id,employee_id,work_date,clock_in,clock_out,status,source,hours)
@@ -1240,7 +1406,8 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             }
             let reason = o(a, &["reason"]).unwrap_or_else(|| "—".into());
             let dept = dept_of(db, &emp).await?;
-            let approvers = resolve_approvers(db, &emp, &dept, &["直属主管"]).await?;
+            // 逐级：直属主管 → 部门总监（resolve_approvers 去重并排除本人，与报销同机制）
+            let approvers = resolve_approvers(db, &emp, &dept, &["直属主管", "部门总监"]).await?;
             let approver = approvers.first().cloned().unwrap_or_else(|| "E01".to_string());
 
             let id = next_id(db, "makeup_requests", &format!("MK-{}", year()), 4).await?;
@@ -1250,13 +1417,14 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 params![id, emp, date, clock_in, clock_out, reason, approver],
             )
             .await?;
-            add_flow(db, "makeup", &id, &[approver.clone()]).await?;
+            add_flow(db, "makeup", &id, &approvers).await?;
             notify(db, &approver, "补卡待审批", &format!("{emp} {date} 补卡：{reason}"), "attendance").await?;
             Ok(json!({
                 "ok": true, "request_id": id, "employee_id": emp, "work_date": date,
                 "clock_in": clock_in, "clock_out": clock_out, "reason": reason,
-                "status": "pending", "approver": approver,
-                "message": format!("{emp} {date} 补卡申请已提交（{reason}），待 {approver} 审批，通过后才会补入考勤")
+                "status": "pending", "approver": approver, "chain": approvers,
+                "message": format!("{emp} {date} 补卡申请已提交（{reason}），审批链 {} 级（当前 {approver}），通过后才会补入考勤",
+                    approvers.len())
             }))
         }
 
@@ -1321,7 +1489,41 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 params![flow_id, s(a, &["comment"]), stamp],
             )
             .await?;
-            // 通过后才补入考勤：迟到/早退与工时复用打卡同一套判定
+
+            // 多级：先看还有没有下一级待审节点，有则转交、暂不写考勤
+            let next = db
+                .query_json(
+                    "SELECT approver, step FROM approval_flows
+                     WHERE entity_type='makeup' AND entity_id=?1 AND status='pending'
+                     ORDER BY step ASC LIMIT 1",
+                    params![id],
+                )
+                .await?;
+            if let Some(n) = next.first() {
+                let next_approver = n["approver"].as_str().unwrap_or_default().to_string();
+                let next_step = n["step"].as_i64().unwrap_or(step + 1);
+                db.execute(
+                    "UPDATE makeup_requests SET approver_id=?2 WHERE id=?1",
+                    params![id, next_approver],
+                )
+                .await?;
+                notify(
+                    db,
+                    &next_approver,
+                    "补卡待审批",
+                    &format!("{id}（{emp} {date}）已通过第 {step} 级，待你审批"),
+                    "attendance",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "request_id": id, "status": "pending",
+                    "step": step, "approver": approver,
+                    "next_approver": next_approver, "next_step": next_step,
+                    "message": format!("{id} 第 {step} 级审批已通过，转交第 {next_step} 级（{next_approver}）")
+                }));
+            }
+
+            // 末级通过后才补入考勤：迟到/早退与工时复用打卡同一套判定
             let status_in = domain::punch_status("in", &clock_in);
             let status_out = domain::punch_status("out", &clock_out);
             let att_status = if status_in != "normal" { status_in } else { status_out };
@@ -1434,17 +1636,18 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let price = cents(a, "price");
             let location = o(a, &["location"]).unwrap_or_else(|| "行政库房".into());
             let id = next_id(db, "assets", "AST", 4).await?;
-            let qr = format!("OA-{id}");
+            // 二维码内容 = 资产编号，SVG 直接落库，前端详情抽屉内联渲染
+            let qr = qr_svg(&id);
             db.execute(
                 "INSERT INTO assets(id,category,model,serial_no,status,holder_id,location,price_cents,qr_code,purchased_at)
-                 VALUES(?1,?2,?3,?4,'instock',NULL,?5,?6,?7,date('now'))",
-                params![id, category, model, sn, location, price, qr],
+                 VALUES(?1,?2,?3,?4,'instock',NULL,?5,?6,?7,?8)",
+                params![id, category, model, sn, location, price, qr, today()],
             ).await?;
             add_event(db, &id, "register", None, "采购入库").await?;
             Ok(json!({
-                "ok": true, "asset_id": id, "qr_code": qr, "serial_no": sn,
+                "ok": true, "asset_id": id, "qr_code": qr, "qr_content": id, "serial_no": sn,
                 "price_cents": price,
-                "message": format!("资产 {id} 已入库：{model}（SN {sn}），二维码 {qr}")
+                "message": format!("资产 {id} 已入库：{model}（SN {sn}），二维码已生成")
             }))
         }
 
@@ -1559,7 +1762,7 @@ mod tests {
 
     #[test]
     fn specs_cover_every_registered_tool() {
-        assert_eq!(TOOL_SPECS.len(), 19);
+        assert_eq!(TOOL_SPECS.len(), 20);
         for (name, _, _, _) in TOOL_SPECS {
             assert!(domain::TOOL_NAMES.contains(name), "{name} missing from TOOL_NAMES");
             let schema = tool_schema(name);
@@ -2144,11 +2347,23 @@ mod tests {
         .await;
         assert_eq!(denied["denied"], true, "{denied}");
 
-        let approved = call(
+        // 逐级：直属主管 E02 是第 1 级，通过后转交第 2 级（E02 的上级 E01）
+        let first = call(
             app.clone(),
             &manager,
             "attendance.approve",
             json!({ "request_id": id, "decision": "approve", "comment": "核实无误", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(first["status"], "pending", "{first}");
+        assert_eq!(first["next_approver"], "E01", "{first}");
+
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+        let approved = call(
+            app.clone(),
+            &admin,
+            "attendance.approve",
+            json!({ "request_id": id, "decision": "approve", "comment": "同意", "confirmed": true }),
         )
         .await;
         assert_eq!(approved["status"], "approved", "{approved}");
@@ -2222,5 +2437,54 @@ mod tests {
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0]["approver"], "E10");
         assert_eq!(rows[1]["approver"], "E01");
+    }
+
+    /// 人事异动审批链是真实可推进的：入职单逐级流转（直属主管 → HRBP → 行政），末级通过才 approved。
+    #[tokio::test]
+    async fn hr_case_approval_walks_chain() {
+        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        let created = call(
+            app.clone(),
+            &admin,
+            "hr.onboard",
+            json!({ "name": "测试入职", "dept_id": "D02", "position": "工程师", "salary_cents": 1500000 }),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+        let case_id = created["case_id"].as_str().unwrap().to_string();
+
+        // 第 1 级：D02 负责人 E02 → 转 HRBP E12
+        let s1 = call(
+            app.clone(),
+            &admin,
+            "hr.approve",
+            json!({ "case_id": case_id, "decision": "approve", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(s1["status"], "running", "{s1}");
+        assert_eq!(s1["next_approver"], "E12", "{s1}");
+
+        // 第 2 级：HRBP E12 → 转行政 E13
+        let s2 = call(
+            app.clone(),
+            &admin,
+            "hr.approve",
+            json!({ "case_id": case_id, "decision": "approve", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(s2["status"], "running", "{s2}");
+        assert_eq!(s2["next_approver"], "E13", "{s2}");
+
+        // 第 3 级：行政 E13 → 完成
+        let s3 = call(
+            app.clone(),
+            &admin,
+            "hr.approve",
+            json!({ "case_id": case_id, "decision": "approve", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(s3["status"], "approved", "{s3}");
     }
 }

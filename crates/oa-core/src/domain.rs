@@ -301,6 +301,7 @@ pub fn format_cents(cents: i64) -> String {
 pub const SENSITIVE_TOOLS: &[&str] = &[
     "hr.offboard",
     "hr.promote",
+    "hr.approve",
     "finance.claim.approve",
     "contract.create",
     "contract.approve",
@@ -311,6 +312,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "hr.onboard",
     "hr.offboard",
     "hr.promote",
+    "hr.approve",
     "hr.roster.query",
     "org.chart",
     "finance.claim.create",
@@ -397,13 +399,13 @@ pub const FEATURES: &[(&str, &str, &str)] = &[
     ("AS-02", "asset", "领用占用自动改派 + 责任人写入"),
     ("AS-03", "asset", "归还释放责任人 + 状态回写"),
     ("AS-04", "asset", "盘点按类别/状态检索 + 原值合计"),
-    ("AG-01", "agent", "19 个工具全部注册且可调用"),
+    ("AG-01", "agent", "20 个工具全部注册且可调用"),
     ("AG-02", "agent", "自然语言意图解析（中英双语）"),
     ("AG-03", "agent", "多步编排：入职联动资产/合同，离职联动回收"),
     ("AG-04", "agent", "敏感操作人工确认门禁"),
     ("AG-05", "agent", "每次调用全量审计（工具/参数/操作者）"),
     ("AG-06", "agent", "无 LLM 密钥时本地意图引擎仍可驱动全部流程"),
-    ("PL-01", "platform", "REST 与 Tauri 双通道命令对齐"),
+    ("PL-01", "platform", "五端统一 REST（浏览器/Windows/macOS/Linux/移动端同一套接口）"),
     ("PL-02", "platform", "SQLite 离线库 + 幂等 seed + 一键重置"),
     ("PL-03", "platform", "工作台 KPI 与审计查询"),
 ];
@@ -469,12 +471,12 @@ mod tests {
 
     #[test]
     fn matrix_and_tool_list_are_consistent() {
-        assert_eq!(TOOL_NAMES.len(), 19);
+        assert_eq!(TOOL_NAMES.len(), 20);
         assert_eq!(TABLE_NAMES.len(), 15);
         assert!(FEATURES.len() >= 25);
         let mut sorted = TOOL_NAMES.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 19, "tool names must be unique");
+        assert_eq!(sorted.len(), 20, "tool names must be unique");
     }
 }
