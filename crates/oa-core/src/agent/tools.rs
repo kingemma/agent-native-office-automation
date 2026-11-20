@@ -763,11 +763,22 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 "SELECT total_cents, used_cents FROM budgets WHERE year=?1 AND dept_id='ALL'",
                 params![year().parse::<i64>().unwrap_or(2026)],
             ).await?;
-            let (total, used) = budget
-                .first()
+            let budget_row = budget.first();
+            let (total, used) = budget_row
                 .map(|r| (r["total_cents"].as_i64().unwrap_or(0), r["used_cents"].as_i64().unwrap_or(0)))
                 .unwrap_or((0, 0));
-            let budget_ok = amount <= total - used;
+            let remaining = total - used;
+            // 配了预算就硬拦截：超额直接拒绝（事务回滚，不落库），不再只提示「人工复核」；
+            // 未配预算（无行）时不拦，避免空库/测试环境里所有报销都被拒。
+            let budget_ok = budget_row.is_none() || amount <= remaining;
+            if !budget_ok {
+                bail!(
+                    "预算校验未通过：本年剩余额度 {:.2} 元，本次报销 {:.2} 元，超出 {:.2} 元，请削减金额或走人工特批",
+                    remaining as f64 / 100.0,
+                    amount as f64 / 100.0,
+                    (amount - remaining) as f64 / 100.0,
+                );
+            }
 
             // 按人员指定审批人：角色标签先由金额/类型决定，再解析成具体员工号
             let labels = domain::approval_chain(amount, &kind);
@@ -824,7 +835,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 "message": format!("报销单 {id} 已创建（{:.2} 元{}），预算校验{}，审批链：{}（共 {} 级，当前由 {first} 审批）",
                     amount as f64 / 100.0,
                     if items.is_empty() { String::new() } else { format!("，{} 条明细", items.len()) },
-                    if budget_ok { "通过" } else { "未通过：超出剩余额度，请人工复核" },
+                    "通过",
                     labels.join(" → "), labels.len())
             }))
         }
@@ -983,6 +994,8 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let sign = o(a, &["sign_date", "signDate"]).unwrap_or_else(|| today());
             let sign = if sign.is_empty() { today() } else { sign };
             let expire = o(a, &["expire_date", "expireDate"]).unwrap_or_default();
+            // 默认到期日放到 Rust 侧算：SQLite 的 date('now','+1 year') 在 Postgres 里不存在
+            let expire = if expire.is_empty() { clock::date_offset(365) } else { expire };
             let owner = o(a, &["owner_id", "ownerId"]).unwrap_or_else(|| "E01".into());
 
             // 法务/用印没有独立岗位：条款与金额由财务经理审，用印由总经理签批。
@@ -1003,8 +1016,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let id = next_id(db, "contracts", &format!("HT-{}", year()), 3).await?;
             db.execute(
                 "INSERT INTO contracts(id,name,party,kind,amount_cents,sign_date,expire_date,status,owner_id)
-                 VALUES(?1,?2,?3,?4,?5,?6,
-                        COALESCE(NULLIF(?7,''),date('now','+1 year')),'review',?8)",
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,'review',?8)",
                 params![id, name, party, kind, amount, sign, expire, owner],
             ).await?;
             add_flow(db, "contract", &id, &approvers).await?;
@@ -1856,6 +1868,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(before[0]["n"], after[0]["n"]);
+    }
+
+    /// 配置了预算就要硬拦截：超额报销直接拒绝、不落库，而不是只提示「人工复核」。
+    /// 本年 ALL 预算剩余 35.74 万（120 万 − 84.26 万），申请 100 万必然超额。
+    #[tokio::test]
+    async fn over_budget_claim_is_rejected() {
+        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+        let before = app
+            .store
+            .query_json("SELECT COUNT(*) AS n FROM claims", &[])
+            .await
+            .unwrap();
+
+        let res = call(
+            app.clone(),
+            &employee,
+            "finance.claim.create",
+            json!({
+                "applicant_id": "E03", "dept_id": "D02", "type": "daily",
+                "amount_cents": 100_000_000, "purpose": "超额测试"
+            }),
+        )
+        .await;
+        assert_eq!(res["ok"], false, "{res}");
+        assert!(
+            res["error"].as_str().unwrap_or_default().contains("预算"),
+            "错误应指明是预算问题：{res}"
+        );
+
+        let after = app
+            .store
+            .query_json("SELECT COUNT(*) AS n FROM claims", &[])
+            .await
+            .unwrap();
+        assert_eq!(before[0]["n"], after[0]["n"], "超额报销不应落库");
     }
 
     /// 合同审批链存具体员工号：法务（财务经理 E10）→ 用印（总经理 E01），

@@ -188,9 +188,25 @@ impl crate::store::Store {
             bail!("用户名或密码错误");
         }
 
+        // 离职冻结：offboard 只把 employees.account_frozen 置 1，这里必须一并校验，
+        // 否则已离职员工仍能用旧密码重新登录
+        let employee_id = row["employee_id"].as_str().unwrap_or("").to_string();
+        let frozen = self
+            .query_json(
+                "SELECT account_frozen FROM employees WHERE id=?1",
+                params![employee_id],
+            )
+            .await?
+            .first()
+            .and_then(|r| r["account_frozen"].as_i64())
+            .unwrap_or(0);
+        if frozen != 0 {
+            bail!("账号已停用（员工已离职），请联系管理员");
+        }
+
         let role = row["role"].as_str().unwrap_or("employee").to_string();
         let user = SessionUser {
-            employee_id: row["employee_id"].as_str().unwrap_or("").to_string(),
+            employee_id,
             username: row["username"].as_str().unwrap_or("").to_string(),
             display_name: row["display_name"].as_str().unwrap_or("").to_string(),
             permissions: permissions_for(&role),
@@ -219,8 +235,11 @@ impl crate::store::Store {
         let row = self
             .query_json(
                 "SELECT u.employee_id, u.username, u.display_name, u.role
-                 FROM sessions s JOIN users u ON u.employee_id=s.user_id
-                 WHERE s.token=?1 AND s.expires_at > ?2 AND u.active=1",
+                 FROM sessions s
+                 JOIN users u ON u.employee_id=s.user_id
+                 LEFT JOIN employees e ON e.id=u.employee_id
+                 WHERE s.token=?1 AND s.expires_at > ?2 AND u.active=1
+                   AND COALESCE(e.account_frozen,0)=0",
                 params![token, clock::utc_now()],
             )
             .await?
@@ -338,6 +357,23 @@ mod tests {
         let db = Store::open_in_memory().await.unwrap();
         assert!(db.login("evan", "bad-password").await.is_err());
         assert!(db.login("nobody", DEFAULT_PASSWORD).await.is_err());
+    }
+
+    /// 离职冻结（employees.account_frozen=1）后：不能再登录，旧会话令牌也立即失效。
+    #[tokio::test]
+    async fn offboard_frozen_account_cannot_login_or_resume_session() {
+        let db = Store::open_in_memory().await.unwrap();
+        let (token, employee) = db.login("lina", DEFAULT_PASSWORD).await.unwrap();
+        assert_eq!(employee.employee_id, "E03");
+        assert!(db.resolve_session(&token).await.unwrap().is_some());
+
+        // 模拟 hr.offboard 的副作用：只置 account_frozen，不碰 users.active
+        db.execute("UPDATE employees SET account_frozen=1 WHERE id=?1", params!["E03"])
+            .await
+            .unwrap();
+
+        assert!(db.login("lina", DEFAULT_PASSWORD).await.is_err(), "冻结后不应再允许登录");
+        assert!(db.resolve_session(&token).await.unwrap().is_none(), "冻结后旧会话应立即失效");
     }
 
     #[tokio::test]

@@ -485,7 +485,9 @@ async fn audit(
     headers: HeaderMap,
     Query(q): Query<PageQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let _user = require_user(&st, &headers).await?;
+    let user = require_user(&st, &headers).await?;
+    // 审计日志含工具名/操作者/入参/结果，与 tables(audit_events) 同口径，仅管理员可读
+    require_admin(&user)?;
     let rows = st
         .app
         .store
