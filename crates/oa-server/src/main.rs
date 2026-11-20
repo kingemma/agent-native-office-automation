@@ -208,17 +208,54 @@ async fn agent_models(
     State(st): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let _user = require_user(&st, &headers).await?;
+    let user = require_user(&st, &headers).await?;
     let configured = agent::llm::effective(&st.app.store).await.map_err(err500)?;
     let Some(cfg) = configured.config else {
         return Ok(Json(json!({ "models": [], "current": "", "mode": "local" })));
     };
+    // 用户上次选的模型优先，没选过才回落到全局配置
+    let current = agent::llm::user_model(&st.app.store, &user.employee_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| cfg.model.clone());
     let (models, error) = match agent::llm::list_models(&st.app.store, "", "").await {
-        Ok(list) if !list.is_empty() => (list, String::new()),
-        Ok(_) => (vec![cfg.model.clone()], String::new()),
+        Ok(list) => {
+            let mut chat: Vec<String> = list
+                .into_iter()
+                .filter(|m| agent::llm::is_chat_model(m))
+                .collect();
+            // 过滤后为空说明端点没提供对话模型，至少保证已配置的那个能选
+            if chat.is_empty() {
+                chat.push(cfg.model.clone());
+            }
+            (chat, String::new())
+        }
         Err(e) => (vec![cfg.model.clone()], format!("{e:#}")),
     };
-    Ok(Json(json!({ "models": models, "current": cfg.model, "mode": "llm", "error": error })))
+    Ok(Json(json!({ "models": models, "current": current, "mode": "llm", "error": error })))
+}
+
+/// 记住当前用户选的对话模型（个人偏好，跨设备生效）
+#[derive(Deserialize, Default)]
+struct AgentModelReq {
+    #[serde(default)]
+    model: String,
+}
+
+async fn set_agent_model(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<AgentModelReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let model = req.model.trim();
+    if model.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "模型名不能为空".to_string()));
+    }
+    agent::llm::set_user_model(&st.app.store, &user.employee_id, model)
+        .await
+        .map_err(err500)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -605,6 +642,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agent/chat", post(chat))
         .route("/api/agent/stream", get(agent_stream).post(agent_stream_post))
         .route("/api/agent/models", get(agent_models))
+        .route("/api/agent/model", post(set_agent_model))
         .route("/api/agent/plan", post(plan))
         .route("/api/tools", get(list_tools))
         .route("/api/tools/call", post(call_tool))

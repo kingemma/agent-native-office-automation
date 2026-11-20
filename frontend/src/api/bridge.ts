@@ -326,6 +326,11 @@ export interface AgentModelsView {
   error: string
 }
 
+/** 记住当前用户选的对话模型（服务端存储，跨设备生效） */
+export async function setAgentModel(model: string): Promise<void> {
+  await httpPost<{ ok: boolean }>('/api/agent/model', { model })
+}
+
 export async function listAgentModels(): Promise<AgentModelsView> {
   const data = await httpGet<Partial<AgentModelsView>>('/api/agent/models')
   return {

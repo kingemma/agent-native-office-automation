@@ -11,7 +11,7 @@ import { QUICK_GROUPS, TOOL_CATALOG } from '../model'
 import { renderMarkdown } from '../markdown'
 import { json, L } from '../utils'
 import {
-  clearSession, dock, loadAgentModels, loadTools, previewPlan, sendAgent, session,
+  chooseAgentModel, clearSession, dock, loadAgentModels, loadTools, previewPlan, sendAgent, session,
 } from '../store'
 
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
@@ -215,13 +215,14 @@ onUnmounted(() => {
         <template #extra>
           <!-- 可选模型来自「模型设置」里配置的端点；只有一个模型时不占位 -->
           <a-select
-            v-if="session.models.length > 1"
-            v-model:value="session.model"
+            v-if="session.models.length"
+            :value="session.model"
             :options="modelOptions"
             :disabled="session.running"
             size="small"
             class="agent-model-select"
             :title="t('agent.modelHint')"
+            @change="chooseAgentModel"
           />
           <a-button v-if="!compact" type="text" size="small" @click="dock">
             <Icon name="panel" :size="13" /> {{ t('agent.dock') }}

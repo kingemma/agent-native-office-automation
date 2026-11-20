@@ -14,6 +14,7 @@ import {
   getToken,
   listAgentModels,
   listTools,
+  setAgentModel,
   type ChatTurn,
   login as apiLogin,
   logout as apiLogout,
@@ -232,12 +233,22 @@ export async function loadAgentModels(): Promise<void> {
   try {
     const res = await listAgentModels()
     session.models = res.models
-    if (!session.model) session.model = res.current
+    // 服务端的 current 已经是「该用户上次选的」；若它被启发式过滤掉，退到第一个可选模型
+    if (!session.model || !res.models.includes(session.model)) {
+      session.model = res.models.includes(res.current) ? res.current : (res.models[0] ?? '')
+    }
     session.modelsLoaded = true
   } catch {
     // 端点未实现 /models 或无模型配置时静默降级：下拉为空即不显示
     session.modelsLoaded = true
   }
+}
+
+/** 切换本轮对话使用的模型，并把它记到当前用户头上（跨设备生效） */
+export function chooseAgentModel(model: string): void {
+  session.model = model
+  // 记忆失败不影响本次对话，静默即可
+  void setAgentModel(model).catch(() => {})
 }
 
 let msgId = 0

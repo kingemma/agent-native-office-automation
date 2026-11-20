@@ -118,6 +118,30 @@ pub fn mask_key(key: &str) -> String {
     format!("{head}…{tail}")
 }
 
+/// 每个用户记住的对话模型（settings 键前缀，避免新增表）
+fn user_model_key(employee_id: &str) -> String {
+    format!("agent_model:{employee_id}")
+}
+
+/// 读用户上次选的模型；没选过返回 `None`，调用方回落到全局配置
+pub async fn user_model(store: &Store, employee_id: &str) -> Result<Option<String>> {
+    let value = store.setting(&user_model_key(employee_id)).await?;
+    Ok(value.filter(|v| !v.trim().is_empty()))
+}
+
+/// 记住用户选的模型（跨设备生效，因为存在服务端）
+pub async fn set_user_model(store: &Store, employee_id: &str, model: &str) -> Result<()> {
+    store.set_setting(&user_model_key(employee_id), model.trim()).await
+}
+
+/// 端点返回的清单里混着嵌入 / 重排 / 语音模型，它们不能对话，
+/// 出现在「对话用哪个模型」的下拉里只会误导。按名字做一层保守过滤。
+pub fn is_chat_model(name: &str) -> bool {
+    const NON_CHAT: [&str; 4] = ["embed", "rerank", "bge", "whisper"];
+    let lower = name.to_lowercase();
+    !NON_CHAT.iter().any(|k| lower.contains(k))
+}
+
 /// 读取落库配置（不含环境变量回退）
 async fn stored_config(store: &Store) -> Result<Option<LlmConfig>> {
     let Some(raw) = store.setting(SETTING_KEY).await? else {
@@ -395,6 +419,23 @@ mod tests {
         assert!(!preset("vllm").unwrap().needs_key);
         assert!(preset("deepseek").unwrap().needs_key);
         assert!(preset("DEEPSEEK").is_some(), "provider code 应大小写不敏感");
+    }
+
+    #[test]
+    fn non_chat_models_stay_out_of_the_selector() {
+        for name in [
+            "text-embedding-3-large",
+            "qwen3-embedding:4b",
+            "bge-m3:567m",
+            "bge-reranker-v2-m3",
+            "whisper-large-v3",
+            "BAAI/bge-large-zh",
+        ] {
+            assert!(!is_chat_model(name), "{name} 不应出现在对话模型下拉里");
+        }
+        for name in ["qwen3.5:9b", "deepseek-chat", "gpt-4o-mini", "Qwen2.5-7B-Instruct"] {
+            assert!(is_chat_model(name), "{name} 是对话模型");
+        }
     }
 
     #[test]
