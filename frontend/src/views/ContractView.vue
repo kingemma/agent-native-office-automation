@@ -4,7 +4,9 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
+import ColumnPicker from '../components/ColumnPicker.vue'
 import AttachmentUploader from '../components/AttachmentUploader.vue'
+import { useColumns } from '../composables/useColumns'
 import { listTable } from '../api/bridge'
 import {
   CONTRACT_TYPES, toContract, toEmployee, toFlow,
@@ -80,7 +82,7 @@ const contractKpis = computed(() => [
   { label: t('contract.kpiThisYear'), value: String(contracts.value.filter((c) => c.signDate.indexOf(String(new Date().getFullYear())) === 0).length), ico: 'trend', color: 'purple' },
 ])
 const columns = computed(() => [
-  { title: t('contract.colNo'), dataIndex: 'id', key: 'id' },
+  { title: t('contract.colNo'), dataIndex: 'id', key: 'id', locked: true },
   { title: t('contract.colName'), dataIndex: 'name', key: 'name' },
   { title: t('contract.colParty'), dataIndex: 'party', key: 'party' },
   { title: t('contract.colType'), key: 'type' },
@@ -89,8 +91,9 @@ const columns = computed(() => [
   { title: t('contract.colExpire'), dataIndex: 'expireDate', key: 'expire' },
   { title: t('contract.colStatus'), key: 'status' },
   { title: t('contract.colOwner'), key: 'owner' },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
+const contractModel = useColumns('contract.contracts', () => columns.value, () => auth.user?.username || '')
 
 /* ---------- 多级审批（法务 → 用印，只有当前节点审批人可操作） ---------- */
 function flowsOf(id: string): ApprovalFlow[] {
@@ -221,8 +224,9 @@ async function submitForm(): Promise<void> {
           <a-input v-model:value="keyword" :placeholder="t('contract.searchPh')" allow-clear style="width: 230px" />
           <span class="spacer"></span>
           <span class="small muted">{{ t('common.total') }} {{ filteredContracts.length }} {{ t('common.result') }}</span>
+          <ColumnPicker :model="contractModel" />
         </div>
-        <a-table class="oa-table" :columns="columns" :data-source="filteredContracts" row-key="id" :pagination="{ pageSize: 8 }">
+        <a-table class="oa-table" :columns="contractModel.columns" :data-source="filteredContracts" row-key="id" :pagination="{ pageSize: 8 }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'id'"><span class="cell-link" @click="openDetail(record)">{{ record.id }}</span></template>
             <template v-else-if="column.key === 'type'"><a-tag :color="tagColor(record.type)">{{ t('st.' + record.type) }}</a-tag></template>

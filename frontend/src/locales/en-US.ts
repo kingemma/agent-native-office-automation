@@ -322,6 +322,7 @@ export default {
     sec5: 'Graceful degradation: pages show a retryable error state when the backend is down; the Agent falls back to the local intent engine without a model.',
     disclaimer: 'Note: this frontend talks to one Axum HTTP API across all five platforms via bridge.ts. When the backend is down, every page shows a retryable error state instead of a blank screen.',
   },
+  columns: { label: 'Columns', title: 'Customize Columns', reset: 'Reset' },
   features: {
     title: 'Feature Acceptance', desc: 'These acceptance points mirror domain::FEATURES on the backend, serving as a capability regression checklist.',
     total: '{n} acceptance points', done: 'Implemented',

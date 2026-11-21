@@ -5,7 +5,9 @@ import { useI18n } from 'vue-i18n'
 import { message } from 'ant-design-vue'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
+import ColumnPicker from '../components/ColumnPicker.vue'
 import AttachmentUploader from '../components/AttachmentUploader.vue'
+import { useColumns } from '../composables/useColumns'
 import { getMetrics, listTable, uploadAttachment, type Metrics } from '../api/bridge'
 import {
   CLAIM_ITEM_STANDARDS, CLAIM_TYPES, toClaim, toClaimItem, toDepartment, toEmployee, toFlow,
@@ -97,7 +99,7 @@ const typeRows = computed(() => CLAIM_TYPES.map((k, i) => ({
 })))
 
 const columns = computed(() => [
-  { title: t('finance.colNo'), dataIndex: 'id', key: 'id' },
+  { title: t('finance.colNo'), dataIndex: 'id', key: 'id', locked: true },
   { title: t('finance.colType'), key: 'type' },
   { title: t('finance.colApplicant'), key: 'applicant' },
   { title: t('finance.colDept'), key: 'dept' },
@@ -106,8 +108,9 @@ const columns = computed(() => [
   { title: t('finance.colAmount'), key: 'amount', align: 'right' as const },
   { title: t('finance.colStatus'), key: 'status' },
   { title: t('finance.colSubmit'), dataIndex: 'submitDate', key: 'submit' },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
+const claimModel = useColumns('finance.claims', () => columns.value, () => auth.user?.username || '')
 
 /* ---------- 审批（多级流转：只有当前节点审批人能操作） ---------- */
 const flows = ref<ApprovalFlow[]>([])
@@ -365,11 +368,12 @@ async function submitClaim(): Promise<void> {
           <a-input v-model:value="keyword" :placeholder="t('finance.searchPh')" allow-clear style="width: 230px" />
           <span class="spacer"></span>
           <span class="small muted">{{ t('common.total') }} {{ filteredClaims.length }} {{ t('common.result') }}</span>
+          <ColumnPicker v-if="tab !== 'budget'" :model="claimModel" />
         </div>
 
         <!-- 报销表格 -->
         <div v-if="tab !== 'budget'">
-          <a-table class="oa-table" :columns="columns" :data-source="filteredClaims" row-key="id" :pagination="{ pageSize: 8 }">
+          <a-table class="oa-table" :columns="claimModel.columns" :data-source="filteredClaims" row-key="id" :pagination="{ pageSize: 8 }">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'id'"><span class="cell-link" @click="openDetail(record)">{{ record.id }}</span></template>
               <template v-else-if="column.key === 'type'"><a-tag :color="tagColor(record.type)">{{ t('st.' + record.type) }}</a-tag></template>

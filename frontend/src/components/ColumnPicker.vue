@@ -39,3 +39,10 @@ defineProps<{
     <a-button size="small"><Icon name="filter" :size="14" /> {{ t('columns.label') }}</a-button>
   </a-popover>
 </template>
+
+<style scoped>
+.col-picker { min-width: 230px; }
+.col-picker-item { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.col-picker-move { display: inline-flex; gap: 0; flex: none; }
+.col-picker-move :deep(.ant-btn) { padding: 0 4px; }
+</style>

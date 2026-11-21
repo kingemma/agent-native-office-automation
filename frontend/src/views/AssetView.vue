@@ -4,10 +4,12 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
+import ColumnPicker from '../components/ColumnPicker.vue'
+import { useColumns } from '../composables/useColumns'
 import { listTable } from '../api/bridge'
 import { ASSET_CATEGORIES, toAsset, toEmployee, type Asset, type Employee } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
-import { can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -75,12 +77,12 @@ const distRows = computed(() =>
     .filter((r) => r.n > 0).sort((a, b) => b.n - a.n),
 )
 const inventoryColumns = computed(() => [
-  { title: t('asset.colCategory'), key: 'category' },
+  { title: t('asset.colCategory'), key: 'category', locked: true },
   { title: t('common.total'), key: 'cnt', align: 'right' as const },
   { title: t('asset.colPrice'), key: 'value', align: 'right' as const },
 ])
 const columns = computed(() => [
-  { title: t('asset.colNo'), dataIndex: 'id', key: 'id' },
+  { title: t('asset.colNo'), dataIndex: 'id', key: 'id', locked: true },
   { title: t('asset.colCategory'), key: 'category' },
   { title: t('asset.colModel'), dataIndex: 'model', key: 'model' },
   { title: t('asset.colSn'), dataIndex: 'sn', key: 'sn' },
@@ -88,8 +90,10 @@ const columns = computed(() => [
   { title: t('asset.colHolder'), key: 'holder' },
   { title: t('asset.colLocation'), dataIndex: 'location', key: 'location' },
   { title: t('asset.colPrice'), key: 'price', align: 'right' as const },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
+const assetModel = useColumns('asset.assets', () => columns.value, () => auth.user?.username || '')
+const inventoryModel = useColumns('asset.inventory', () => inventoryColumns.value, () => auth.user?.username || '')
 
 /* ---------- 详情 ---------- */
 const detailOpen = ref(false)
@@ -210,8 +214,9 @@ async function submitReturn(): Promise<void> {
           <a-input v-model:value="keyword" :placeholder="t('asset.searchPh')" allow-clear style="width: 230px" />
           <span class="spacer"></span>
           <span class="small muted">{{ t('asset.totalValue') }}: <b>{{ money(inventoryTotal) }}</b></span>
+          <ColumnPicker :model="assetModel" />
         </div>
-        <a-table class="oa-table" :columns="columns" :data-source="filteredAssets" row-key="id" :pagination="{ pageSize: 8 }">
+        <a-table class="oa-table" :columns="assetModel.columns" :data-source="filteredAssets" row-key="id" :pagination="{ pageSize: 8 }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'id'"><span class="cell-link" @click="openDetail(record)">{{ record.id }}</span></template>
             <template v-else-if="column.key === 'category'"><a-tag :color="tagColor(record.category)">{{ t('st.' + record.category) }}</a-tag></template>
@@ -242,8 +247,13 @@ async function submitReturn(): Promise<void> {
 
       <!-- 盘点结果（点「盘点」后按类别汇总） -->
       <a-card v-if="inventoryRows.length" :title="t('asset.inventoryTitle')" class="mt16">
-        <template #extra><span class="small muted">{{ t('asset.totalValue') }}: <b>{{ money(inventoryValue) }}</b></span></template>
-        <a-table class="oa-table" :columns="inventoryColumns" :data-source="inventoryRows" row-key="category" :pagination="false" size="small">
+        <template #extra>
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span class="small muted">{{ t('asset.totalValue') }}: <b>{{ money(inventoryValue) }}</b></span>
+            <ColumnPicker :model="inventoryModel" />
+          </div>
+        </template>
+        <a-table class="oa-table" :columns="inventoryModel.columns" :data-source="inventoryRows" row-key="category" :pagination="false" size="small">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'category'">{{ t('st.' + record.category) }}</template>
             <template v-else-if="column.key === 'value'"><span class="cell-num">{{ money(record.value) }}</span></template>

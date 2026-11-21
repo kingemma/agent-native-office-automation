@@ -4,6 +4,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
+import ColumnPicker from '../components/ColumnPicker.vue'
+import { useColumns } from '../composables/useColumns'
 import { listTable } from '../api/bridge'
 import {
   ATTENDANCE_STATUSES, toAttendance, toDepartment, toEmployee, toFlow, toMakeupRequest,
@@ -138,7 +140,7 @@ const monthRate = computed(() => {
 })
 
 const reportColumns = computed(() => [
-  { title: t('attendance.colName'), key: 'name' },
+  { title: t('attendance.colName'), key: 'name', locked: true },
   { title: t('attendance.colDept'), dataIndex: 'dept', key: 'dept' },
   { title: t('attendance.colDays'), dataIndex: 'days', key: 'days', align: 'right' as const },
   { title: t('attendance.colNormal'), dataIndex: 'normal', key: 'normal', align: 'right' as const },
@@ -151,7 +153,7 @@ const reportColumns = computed(() => [
   { title: t('attendance.colRate'), key: 'rate', align: 'right' as const },
 ])
 const columns = computed(() => [
-  { title: t('attendance.colName'), key: 'name' },
+  { title: t('attendance.colName'), key: 'name', locked: true },
   { title: t('attendance.colDept'), key: 'dept' },
   { title: t('attendance.colIn'), dataIndex: 'checkIn', key: 'in' },
   { title: t('attendance.colOut'), dataIndex: 'checkOut', key: 'out' },
@@ -216,7 +218,7 @@ async function submitDecide(): Promise<void> {
 }
 
 const makeupColumns = computed(() => [
-  { title: t('attendance.makeupRequest'), dataIndex: 'id', key: 'id' },
+  { title: t('attendance.makeupRequest'), dataIndex: 'id', key: 'id', locked: true },
   { title: t('attendance.colName'), key: 'name' },
   { title: t('attendance.colDate'), dataIndex: 'date', key: 'date' },
   { title: t('attendance.colIn'), key: 'in' },
@@ -224,8 +226,11 @@ const makeupColumns = computed(() => [
   { title: t('attendance.makeupReason'), dataIndex: 'reason', key: 'reason' },
   { title: t('attendance.colStatus'), key: 'status' },
   { title: t('attendance.colApprover'), key: 'approver' },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
+const todayModel = useColumns('attendance.today', () => columns.value, () => auth.user?.username || '')
+const reportModel = useColumns('attendance.report', () => reportColumns.value, () => auth.user?.username || '')
+const makeupModel = useColumns('attendance.makeup', () => makeupColumns.value, () => auth.user?.username || '')
 
 const makeupOpen = ref(false)
 const submitting = ref(false)
@@ -284,8 +289,13 @@ async function submitMakeup(): Promise<void> {
 
       <div class="oa-grid g-2-1">
         <a-card :title="t('attendance.punchedAt')">
-          <template #extra><span class="small muted">{{ latestDate }}</span></template>
-          <a-table class="oa-table" :columns="columns" :data-source="todayRows" row-key="id" :pagination="false">
+          <template #extra>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span class="small muted">{{ latestDate }}</span>
+              <ColumnPicker :model="todayModel" />
+            </div>
+          </template>
+          <a-table class="oa-table" :columns="todayModel.columns" :data-source="todayRows" row-key="id" :pagination="false">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'name'">{{ empName(record.empId) }}</template>
               <template v-else-if="column.key === 'dept'">{{ deptOf(record.empId) }}</template>
@@ -325,11 +335,14 @@ async function submitMakeup(): Promise<void> {
       <!-- 月度考勤报表：按人汇总，与 attendance.report 同口径 -->
       <a-card class="mt16" :title="t('attendance.reportTitle')">
         <template #extra>
-          <span class="small muted">{{ t('attendance.reportDesc') }} · {{ reportMonth }}</span>
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span class="small muted">{{ t('attendance.reportDesc') }} · {{ reportMonth }}</span>
+            <ColumnPicker :model="reportModel" />
+          </div>
         </template>
         <a-table
           class="oa-table"
-          :columns="reportColumns"
+          :columns="reportModel.columns"
           :data-source="reportRows"
           row-key="empId"
           :pagination="{ pageSize: 8 }"
@@ -351,11 +364,14 @@ async function submitMakeup(): Promise<void> {
       <!-- 补卡申请：申请只落请求，主管通过后才补入考勤 -->
       <a-card class="mt16" :title="t('attendance.makeupList')">
         <template #extra>
-          <span class="small muted">{{ t('attendance.pendingMakeups') }} {{ pendingMakeups }}</span>
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span class="small muted">{{ t('attendance.pendingMakeups') }} {{ pendingMakeups }}</span>
+            <ColumnPicker :model="makeupModel" />
+          </div>
         </template>
         <a-table
           class="oa-table"
-          :columns="makeupColumns"
+          :columns="makeupModel.columns"
           :data-source="makeups"
           row-key="id"
           :pagination="{ pageSize: 8 }"

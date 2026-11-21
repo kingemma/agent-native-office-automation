@@ -4,6 +4,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
+import ColumnPicker from '../components/ColumnPicker.vue'
+import { useColumns } from '../composables/useColumns'
 import { listTable } from '../api/bridge'
 import {
   EMP_STATUSES, toDepartment, toEmployee, toHrCase,
@@ -12,7 +14,7 @@ import {
 import {
   aliased, centsArgs, dateAdd, money, tagColor, today,
 } from '../utils'
-import { can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -92,26 +94,28 @@ const hrKpis = computed(() => [
 
 /* ---------- 表格列 ---------- */
 const rosterColumns = computed(() => [
-  { title: t('hr.colNo'), dataIndex: 'no', key: 'no' },
-  { title: t('hr.colName'), dataIndex: 'name', key: 'name' },
+  { title: t('hr.colNo'), dataIndex: 'no', key: 'no', locked: true },
+  { title: t('hr.colName'), dataIndex: 'name', key: 'name', locked: true },
   { title: t('hr.colDept'), key: 'dept' },
   { title: t('hr.colPosition'), dataIndex: 'position', key: 'position' },
   { title: t('hr.colStatus'), key: 'status' },
   { title: t('hr.colEntry'), dataIndex: 'entryDate', key: 'entry' },
   { title: t('hr.colSalary'), key: 'salary', align: 'right' as const },
   { title: t('hr.colManager'), key: 'manager' },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
 const caseColumns = computed(() => [
-  { title: t('hr.caseNo'), dataIndex: 'id', key: 'id' },
+  { title: t('hr.caseNo'), dataIndex: 'id', key: 'id', locked: true },
   { title: t('hr.caseType'), key: 'type' },
   { title: t('hr.caseEmployee'), key: 'employee' },
   { title: t('hr.caseEffective'), dataIndex: 'effectiveDate', key: 'effective' },
   { title: t('hr.caseReason'), dataIndex: 'reason', key: 'reason' },
   { title: t('hr.caseStatus'), key: 'status' },
   { title: t('hr.caseSteps'), key: 'steps' },
-  { title: t('common.action'), key: 'action' },
+  { title: t('common.action'), key: 'action', locked: true },
 ])
+const rosterModel = useColumns('hr.roster', () => rosterColumns.value, () => auth.user?.username || '')
+const caseModel = useColumns('hr.cases', () => caseColumns.value, () => auth.user?.username || '')
 
 /* ---------- 详情抽屉 ---------- */
 const detailOpen = ref(false)
@@ -276,8 +280,9 @@ async function submitApprove(): Promise<void> {
               <a-input v-model:value="keyword" :placeholder="t('hr.searchPh')" allow-clear style="width: 220px" />
               <span class="spacer"></span>
               <span class="small muted">{{ t('common.total') }} {{ filteredEmployees.length }} {{ t('common.result') }}</span>
+              <ColumnPicker :model="rosterModel" />
             </div>
-            <a-table class="oa-table" :columns="rosterColumns" :data-source="filteredEmployees" row-key="id" :pagination="{ pageSize: 8 }">
+            <a-table class="oa-table" :columns="rosterModel.columns" :data-source="filteredEmployees" row-key="id" :pagination="{ pageSize: 8 }">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'dept'">{{ deptName(record.deptId) }}</template>
                 <template v-else-if="column.key === 'status'">
@@ -321,8 +326,9 @@ async function submitApprove(): Promise<void> {
           <a-tab-pane key="cases" :tab="t('hr.tabCases')">
             <div class="oa-toolbar">
               <span class="small muted">{{ t('common.total') }} {{ cases.length }} {{ t('common.result') }}</span>
+              <ColumnPicker :model="caseModel" />
             </div>
-            <a-table class="oa-table" :columns="caseColumns" :data-source="cases" row-key="id" :pagination="{ pageSize: 8 }">
+            <a-table class="oa-table" :columns="caseModel.columns" :data-source="cases" row-key="id" :pagination="{ pageSize: 8 }">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'id'"><span class="cell-link" @click="openDetail('case', record)">{{ record.id }}</span></template>
                 <template v-else-if="column.key === 'type'"><a-tag :color="tagColor(record.type)">{{ t('st.' + record.type) }}</a-tag></template>
