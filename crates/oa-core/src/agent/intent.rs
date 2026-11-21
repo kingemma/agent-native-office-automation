@@ -399,7 +399,7 @@ pub async fn plan_for(
             "contract.create",
             json!({
                 "name": format!("{name} 劳动合同"), "party": name,
-                "type": "labor", "amount_cents": 0,
+                "type": "labor", "amount_cents": salary,
                 "sign_date": if date.is_empty() { Value::Null } else { json!(date) }
             }),
         ));
@@ -862,9 +862,12 @@ mod tests {
             .unwrap();
         assert_eq!(steps.len(), 3, "onboarding should chain 3 tools");
         assert_eq!(steps[0].tool, "hr.onboard");
+        // 月薪 18000 元 = 1_800_000 分；劳动合同金额应携带同一份月薪，不能落成 0
+        assert_eq!(steps[0].args["salary_cents"], 1_800_000);
         assert_eq!(steps[1].tool, "asset.assign");
         assert_eq!(steps[1].args["employee_id"], "$0.employee_id");
         assert_eq!(steps[2].tool, "contract.create");
+        assert_eq!(steps[2].args["amount_cents"], 1_800_000);
         let resolved = resolve_args(&steps[1].args, &[json!({ "employee_id": "E17" })]);
         assert_eq!(resolved["employee_id"], "E17");
     }

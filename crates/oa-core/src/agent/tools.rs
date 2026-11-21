@@ -67,6 +67,44 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "holder_id", "last_day", "reason", "manager_id", "owner_id", "items",
 ];
 
+/// 金额参数说明：明确单位是「分」，引导模型把「月薪 18000 元」换算成 1800000 分，
+/// 而不是把元直接当分写入（薪资 / 金额差 100 倍的根因）。
+const PARAM_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("salary_cents", "月薪（单位：分，1 元 = 100 分）"),
+    ("new_salary_cents", "新月薪（单位：分，1 元 = 100 分）"),
+    ("amount_cents", "金额（单位：分，1 元 = 100 分）"),
+    ("price_cents", "采购价（单位：分，1 元 = 100 分）"),
+    ("items", "费用明细数组，每项含 category 与 amount_cents（分）"),
+];
+
+fn param_desc(key: &str) -> &str {
+    PARAM_DESCRIPTIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, d)| *d)
+        .unwrap_or(key)
+}
+
+/// 数组参数的元素 Schema：目前只有报销明细一种数组，给出字段与金额单位，
+/// 避免模型在明细里放错字段名、或把「元」直接当「分」写。
+fn array_item_schema(key: &str) -> Value {
+    if key == "items" {
+        json!({
+            "type": "object",
+            "properties": {
+                "category": { "type": "string", "description": "费用类型：transport/hotel/meal/office/other" },
+                "amount_cents": { "type": "integer", "description": "金额（单位：分，1 元 = 100 分）" },
+                "occurred_on": { "type": "string", "description": "发生日期 YYYY-MM-DD（可选）" },
+                "invoice_no": { "type": "string", "description": "发票号（可选）" },
+                "note": { "type": "string", "description": "备注（超标时必填）" }
+            },
+            "required": ["category", "amount_cents"]
+        })
+    } else {
+        json!({ "type": "object" })
+    }
+}
+
 pub fn tool_schema(name: &str) -> Value {
     let spec = TOOL_SPECS.iter().find(|s| s.0 == name);
     let mut props = Map::new();
@@ -75,9 +113,9 @@ pub fn tool_schema(name: &str) -> Value {
         for (key, ty) in *fields {
             // 数组参数要带上 items 描述，否则模型不知道每行该给什么字段
             let prop = if *ty == "array" {
-                json!({ "type": "array", "description": key, "items": { "type": "object" } })
+                json!({ "type": "array", "description": param_desc(key), "items": array_item_schema(key) })
             } else {
-                json!({ "type": ty, "description": key })
+                json!({ "type": ty, "description": param_desc(key) })
             };
             props.insert((*key).to_string(), prop);
             if !OPTIONAL_FIELDS.contains(key) {
@@ -200,6 +238,19 @@ fn cents(a: &Value, key: &str) -> i64 {
         return n(a, &[cents_key.as_str()]);
     }
     n(a, &[key]) * 100
+}
+
+/// 审批决定归一化：识别各种「驳回 / 拒绝」写法，其余一律视为「通过」。
+///
+/// LLM 会按工具描述里的中文「驳回」直接传 `decision: "驳回"`，或传 rejected /
+/// decline / deny 等变体；若只判 `== "reject"`，这些会被全部误判成「通过」。
+fn is_reject(decision: &str) -> bool {
+    let d = decision.trim().to_ascii_lowercase();
+    matches!(
+        d.as_str(),
+        "reject" | "rejected" | "decline" | "declined" | "deny" | "denied"
+            | "驳回" | "拒绝" | "不通过" | "不同意"
+    )
 }
 
 fn need(a: &Value, keys: &[&str], label: &str) -> Result<String> {
@@ -813,7 +864,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let kind = row["kind"].as_str().unwrap_or("").to_string();
             let emp = row["employee_id"].as_str().unwrap_or("").to_string();
 
-            if decision == "reject" {
+            if is_reject(&decision) {
                 db.execute(
                     "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
                     params![flow_id, s(a, &["comment"]), stamp],
@@ -1044,7 +1095,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let stamp = clock::local_datetime();
             let amount_cents = row["amount_cents"].as_i64().unwrap_or(0);
 
-            if decision == "reject" {
+            if is_reject(&decision) {
                 db.execute(
                     "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
                     params![flow_id, s(a, &["comment"]), stamp],
@@ -1231,7 +1282,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let name = row["name"].as_str().unwrap_or("").to_string();
             let owner = row["owner_id"].as_str().unwrap_or("E01").to_string();
 
-            if decision == "reject" {
+            if is_reject(&decision) {
                 db.execute(
                     "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
                     params![flow_id, s(a, &["comment"]), stamp],
@@ -1465,7 +1516,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let clock_in = row["clock_in"].as_str().unwrap_or("09:00").to_string();
             let clock_out = row["clock_out"].as_str().unwrap_or("18:00").to_string();
 
-            if decision == "reject" {
+            if is_reject(&decision) {
                 db.execute(
                     "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
                     params![flow_id, s(a, &["comment"]), stamp],
@@ -1758,6 +1809,17 @@ mod tests {
         let b = json!({ "amount_cents": 5000, "amount": 50 });
         assert_eq!(cents(&b, "amount"), 5000);
         assert_eq!(s(&a, &["asset_id"]), "AST-0003");
+    }
+
+    #[test]
+    fn decision_normalization_recognizes_reject_variants() {
+        // LLM 可能传中文「驳回」或 rejected/decline 等变体，只有这些才算驳回，其余按通过
+        for d in ["reject", "REJECT", "Rejected", "rejected", "decline", "declined", "deny", "denied", "驳回", "拒绝", "不通过", "不同意"] {
+            assert!(is_reject(d), "{d} 应被识别为驳回");
+        }
+        for d in ["approve", "通过", "同意", "approved", "ok", ""] {
+            assert!(!is_reject(d), "{d} 不应被识别为驳回");
+        }
     }
 
     #[test]
