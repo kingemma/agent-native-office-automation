@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '../components/Icon.vue'
 import { auth, doLogin, endpoint, testEndpoints } from '../store'
 import { toggleLocale } from '../i18n'
+import { TOOL_CATALOG } from '../model'
 
 const { t } = useI18n()
 
@@ -72,7 +73,7 @@ async function submit(): Promise<void> {
       </div>
       <ul class="lb-points">
         <li><Icon name="shield" :size="15" /> {{ t('auth.tip') }}</li>
-        <li><Icon name="flow" :size="15" /> {{ t('agent.chip2') }}</li>
+        <li><Icon name="flow" :size="15" /> {{ t('agent.chip2', { n: TOOL_CATALOG.length }) }}</li>
         <li><Icon name="activity" :size="15" /> {{ t('agent.chip3') }}</li>
       </ul>
       <button class="lb-lang" @click="toggleLocale">{{ t('header.langTarget') }}</button>

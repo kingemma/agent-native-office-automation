@@ -220,7 +220,7 @@ export default {
     },
     heroTitle: 'One Agent. The entire OA.',
     heroDesc: 'The Agent understands intent, builds an execution plan, calls backend tools step by step, and syncs results across HR, Finance, Contracts, Attendance and Assets. Production uses Rust + Rig with a real LLM.',
-    chip1: 'Rig 0.46 · Tool Calling', chip2: '20 Business Tools', chip3: 'Full Audit Trail', chip4: 'Human-in-the-loop',
+    chip1: 'Rig 0.46 · Tool Calling', chip2: '{n} Business Tools', chip3: 'Full Audit Trail', chip4: 'Human-in-the-loop',
     chatTitle: 'Conversation', engine: 'Rig 0.46 · LLM orchestration',
     placeholder: 'Describe what you want, e.g. Onboard Xu Zhiyuan as a Frontend Engineer in R&D, salary 18000…',
     send: 'Send', sending: 'Running…', quickTitle: 'Quick commands (click to run)',

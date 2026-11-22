@@ -218,7 +218,7 @@ export default {
     },
     heroTitle: '一个 Agent，操作整个 OA',
     heroDesc: 'Agent 会先理解意图、拆解执行计划，再依次调用后端工具完成写入，并把结果同步到人事、财务、合同、考勤、资产各模块。生产模式由 Rust + Rig 编排真实 LLM。',
-    chip1: 'Rig 0.46 · Tool Calling', chip2: '20 个业务工具', chip3: '全链路审计', chip4: '人在回路审批',
+    chip1: 'Rig 0.46 · Tool Calling', chip2: '{n} 个业务工具', chip3: '全链路审计', chip4: '人在回路审批',
     chatTitle: '对话', engine: 'Rig 0.46 · LLM 编排',
     placeholder: '描述你想做的事，例如：为许知远办理入职，研发中心前端工程师，月薪 18000…',
     send: '发送', sending: '执行中…', quickTitle: '快捷指令（点击直接执行）',
