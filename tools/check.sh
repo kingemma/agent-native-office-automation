@@ -4,7 +4,7 @@
 # 背景：本机默认 Rust 工具链是 MSVC，但缺 Windows SDK 导入库与 CRT，
 # link.exe 无法链接 build script / proc-macro 的 host 可执行文件。
 # 本脚本切到 GNU host 工具链，并把 tools/mingw-bin 里的 MinGW-w64 GCC
-# 加入 PATH，使 raw-dylib(dlltool + as) 与 rusqlite bundled(C 编译) 都能通过。
+# 加入 PATH，使 raw-dylib(dlltool + as) 等依赖汇编器的环节能通过。
 #
 # 用法：
 #   ./tools/check.sh                     # 等价于 cargo check --workspace

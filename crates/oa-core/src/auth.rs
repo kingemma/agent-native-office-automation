@@ -335,11 +335,10 @@ pub fn login_payload(token: String, user: SessionUser) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
 
     #[tokio::test]
     async fn seed_accounts_can_login_and_permissions_apply() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (token, admin) = db.login("evan", DEFAULT_PASSWORD).await.unwrap();
         assert_eq!(admin.role, "admin");
         assert_eq!(admin.permissions.len(), domain::TOOL_NAMES.len());
@@ -357,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_password_is_rejected() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         assert!(db.login("evan", "bad-password").await.is_err());
         assert!(db.login("nobody", DEFAULT_PASSWORD).await.is_err());
     }
@@ -365,7 +364,7 @@ mod tests {
     /// 离职冻结（employees.account_frozen=1）后：不能再登录，旧会话令牌也立即失效。
     #[tokio::test]
     async fn offboard_frozen_account_cannot_login_or_resume_session() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (token, employee) = db.login("lina", DEFAULT_PASSWORD).await.unwrap();
         assert_eq!(employee.employee_id, "E03");
         assert!(db.resolve_session(&token).await.unwrap().is_some());
@@ -381,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn logout_invalidates_token() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (token, _) = db.login("evan", DEFAULT_PASSWORD).await.unwrap();
         db.logout(&token).await.unwrap();
         assert!(db.resolve_session(&token).await.unwrap().is_none());
@@ -389,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn change_password_revokes_sessions() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (token, user) = db.login("lina", DEFAULT_PASSWORD).await.unwrap();
         db.change_password(&user.employee_id, DEFAULT_PASSWORD, "newpass123")
             .await

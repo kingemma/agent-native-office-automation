@@ -619,9 +619,10 @@ async fn features() -> Json<Value> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // SQLite 用于单机；多租户部署改为 sqlx::PgPool + 同样的 SCHEMA_SQL。
-    let db = std::env::var("OA_DB").unwrap_or_else(|_| "oa.db".to_string());
-    // 附件根目录：默认 oa-files/，与库文件同机；容器部署时挂卷到 OA_FILES 即可
+    // 服务端唯一数据源是 Postgres；未显式配置时指向本机开发实例（docker compose up -d postgres）。
+    let db = std::env::var("OA_DB")
+        .unwrap_or_else(|_| "postgresql://oa:oa@127.0.0.1:5432/oa".to_string());
+    // 附件根目录：默认 oa-files/；容器部署时挂卷到 OA_FILES 即可
     let files_dir = files::default_root();
     std::fs::create_dir_all(&files_dir)?;
     let state = WebState {

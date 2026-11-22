@@ -6,11 +6,12 @@
 #   install -m 0644 deploy/oa-server.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now oa-server
 #
-# 数据（oa.db + 附件）落在 /var/lib/oa，升级时只替换 /opt/oa/oa-server 二进制。
+# 数据分两处：业务库在 Postgres，附件落在 /var/lib/oa/oa-files；升级只换二进制。
+# OA_DB 按本机 Postgres 的账号密码修改；密码含特殊字符需做 URL 编码。
 [Unit]
 Description=Yugong OA server (REST :8787)
 Documentation=https://github.com/kingemma/agent-native-office-automation
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
@@ -21,7 +22,7 @@ WorkingDirectory=/opt/oa
 
 # 默认就是 0.0.0.0:8787：局域网客户端需要能直连，绑 127.0.0.1 会连不上
 Environment=OA_ADDR=0.0.0.0:8787
-Environment=OA_DB=/var/lib/oa/oa.db
+Environment=OA_DB=postgresql://oa:oa@127.0.0.1:5432/oa
 Environment=OA_FILES=/var/lib/oa/oa-files
 Environment=RUST_LOG=info
 

@@ -8,6 +8,9 @@ pub mod domain;
 pub mod files;
 pub mod store;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use auth::SessionUser;
 
 /// 所有 Tool 共享的宿主状态。`Store` 内部是 sqlx 连接池（Clone = 共享池），

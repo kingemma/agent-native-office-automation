@@ -1,17 +1,15 @@
-//! 存储层 · SQLite（桌面/单机/测试）+ Postgres（多实例服务端）
+//! 存储层 · Postgres（服务端唯一数据库）
 //!
 //! 设计要点：
 //! - 15 张业务表（含附件元数据）+ users/sessions + counters，覆盖 6 大域与认证审计；
-//! - `open_*` 自动建表、灌入幂等 seed、初始化演示账号；
+//! - `open_uri` 自动建表、灌入幂等 seed、初始化演示账号；
 //! - 金额统一「分」，日期统一 `YYYY-MM-DD`；业务日期在 Rust 侧按本地时区计算，
-//!   SQL 不再出现 `date('now')/strftime()`，两种数据库共用同一份查询；
+//!   SQL 不再出现 `date('now')/strftime()`；
 //! - 单号通过 `counters` 表原子取号（`UPDATE ... RETURNING`），多实例并发不撞号；
-//! - 写多步操作走 `Store::transaction`，SQLite/Postgres 各自事务对象。
+//! - 写多步操作走 `Store::transaction`。
 
 use crate::auth::SessionUser;
-use crate::db::{
-    execute_pg, execute_sqlite, fetch_pg, fetch_sqlite, BoxFuture, Params, Repo, Tx,
-};
+use crate::db::{execute_pg, fetch_pg, BoxFuture, Params, Repo, Tx};
 use crate::params;
 use crate::clock;
 use crate::domain;
@@ -19,142 +17,15 @@ use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{PgPool, SqlitePool};
-use std::str::FromStr;
+use sqlx::PgPool;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 /* ---------------- DDL ---------------- */
 
-pub const SCHEMA_SQLITE: &str = r#"
-CREATE TABLE IF NOT EXISTS departments (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, leader_id TEXT
-);
-CREATE TABLE IF NOT EXISTS employees (
-  id TEXT PRIMARY KEY, no TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
-  dept_id TEXT NOT NULL, position TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'probation',
-  entry_date TEXT NOT NULL, salary_cents INTEGER NOT NULL DEFAULT 0,
-  manager_id TEXT, email TEXT, account_frozen INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS hr_cases (
-  id TEXT PRIMARY KEY, kind TEXT NOT NULL, employee_id TEXT NOT NULL,
-  effective_date TEXT, reason TEXT, status TEXT NOT NULL DEFAULT 'running',
-  step_index INTEGER NOT NULL DEFAULT 0, steps TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS claims (
-  id TEXT PRIMARY KEY, kind TEXT NOT NULL, applicant_id TEXT NOT NULL,
-  dept_id TEXT, amount_cents INTEGER NOT NULL, purpose TEXT, project TEXT,
-  status TEXT NOT NULL DEFAULT 'pending', submitted_at TEXT NOT NULL,
-  approver_id TEXT, budget_ok INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS contracts (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, party TEXT, kind TEXT,
-  amount_cents INTEGER NOT NULL DEFAULT 0, sign_date TEXT, expire_date TEXT,
-  status TEXT NOT NULL DEFAULT 'review', owner_id TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS attendance (
-  id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, work_date TEXT NOT NULL,
-  clock_in TEXT, clock_out TEXT, status TEXT, source TEXT, hours REAL NOT NULL DEFAULT 0,
-  UNIQUE(employee_id, work_date)
-);
-CREATE TABLE IF NOT EXISTS makeup_requests (
-  id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, work_date TEXT NOT NULL,
-  clock_in TEXT, clock_out TEXT, reason TEXT,
-  status TEXT NOT NULL DEFAULT 'pending', approver_id TEXT, comment TEXT, decided_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS assets (
-  id TEXT PRIMARY KEY, category TEXT NOT NULL, model TEXT, serial_no TEXT UNIQUE,
-  status TEXT NOT NULL DEFAULT 'instock', holder_id TEXT, location TEXT,
-  price_cents INTEGER NOT NULL DEFAULT 0, qr_code TEXT, purchased_at TEXT
-);
-CREATE TABLE IF NOT EXISTS budgets (
-  year INTEGER NOT NULL, dept_id TEXT NOT NULL, total_cents INTEGER NOT NULL,
-  used_cents INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(year, dept_id)
-);
-CREATE TABLE IF NOT EXISTS approval_flows (
-  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
-  step INTEGER NOT NULL, approver TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-  comment TEXT, acted_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS payments (
-  id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, amount_cents INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued', scheduled_at TEXT, paid_at TEXT
-);
-CREATE TABLE IF NOT EXISTS claim_items (
-  id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, category TEXT NOT NULL,
-  amount_cents INTEGER NOT NULL, occurred_on TEXT, invoice_no TEXT, note TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS attachments (
-  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
-  file_name TEXT NOT NULL, mime TEXT NOT NULL, size_bytes INTEGER NOT NULL,
-  storage_path TEXT NOT NULL, uploaded_by TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS asset_events (
-  id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, kind TEXT NOT NULL,
-  employee_id TEXT, note TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS notifications (
-  id TEXT PRIMARY KEY, recipient_id TEXT NOT NULL, title TEXT NOT NULL,
-  body TEXT, kind TEXT, is_read INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS audit_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, actor TEXT NOT NULL,
-  payload TEXT, result TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY, employee_id TEXT UNIQUE NOT NULL, username TEXT UNIQUE NOT NULL,
-  display_name TEXT NOT NULL, password_hash TEXT NOT NULL, salt TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'employee', active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS sessions (
-  token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS counters (
-  name TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0
-);
--- 运行时配置（目前是 LLM 提供商），与业务数据分开存放，重置演示数据时保留
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY, value TEXT NOT NULL
-);
--- 自定义字段库：全局定义，按业务实体归类；label 存 {"zh","en"} JSON，options 存下拉项 JSON 数组
-CREATE TABLE IF NOT EXISTS custom_fields (
-  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, label TEXT NOT NULL,
-  field_type TEXT NOT NULL, options TEXT,
-  required INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
-  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
--- 自定义字段值：EAV 模式，避免给每张业务表加列；一条记录一个字段一行
-CREATE TABLE IF NOT EXISTS custom_field_values (
-  entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, field_id TEXT NOT NULL,
-  value TEXT, PRIMARY KEY(entity_type, entity_id, field_id)
-);
-CREATE INDEX IF NOT EXISTS idx_emp_dept ON employees(dept_id);
-CREATE INDEX IF NOT EXISTS idx_emp_status ON employees(status);
-CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
-CREATE INDEX IF NOT EXISTS idx_claims_date ON claims(submitted_at);
-CREATE INDEX IF NOT EXISTS idx_contract_expire ON contracts(expire_date);
-CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(work_date);
-CREATE INDEX IF NOT EXISTS idx_makeup_emp ON makeup_requests(employee_id, work_date);
-CREATE INDEX IF NOT EXISTS idx_asset_status ON assets(status);
-CREATE INDEX IF NOT EXISTS idx_attach_entity ON attachments(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_events(tool);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_expire ON sessions(expires_at);
-"#;
 
-/// Postgres DDL：类型换成 BIGINT / DOUBLE PRECISION，自增换成 BIGSERIAL，
-/// 时间戳默认值与 SQLite 的 `CURRENT_TIMESTAMP` 保持同一种字符串格式（UTC）。
+
+/// Postgres DDL。
 pub const SCHEMA_PG: &str = r#"
 CREATE TABLE IF NOT EXISTS departments (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, leader_id TEXT
@@ -459,60 +330,16 @@ DELETE FROM counters;
 /* ---------------- Store ---------------- */
 
 #[derive(Clone)]
-pub enum Store {
-    Sqlite(SqlitePool),
-    Postgres(PgPool),
-}
+pub struct Store(pub(crate) PgPool);
 
 impl Store {
-    /// 统一入口：`postgres://`/`postgresql://` 走 Postgres，其余视为 SQLite 文件路径。
+    /// 统一入口：只接受 Postgres 连接串（`postgres://` / `postgresql://`）。
     pub async fn open_uri(uri: &str) -> Result<Self> {
         let uri = uri.trim();
-        if uri.starts_with("postgres://") || uri.starts_with("postgresql://") {
-            Self::open_postgres(uri).await
-        } else {
-            Self::open_sqlite(uri).await
+        if !uri.starts_with("postgres://") && !uri.starts_with("postgresql://") {
+            anyhow::bail!("OA_DB 必须是 postgres:// 或 postgresql:// 连接串，收到: {uri}");
         }
-    }
-
-    pub async fn open_sqlite(path: &str) -> Result<Self> {
-        let options = SqliteConnectOptions::from_str(path)
-            .with_context(|| format!("invalid sqlite path: {path}"))?
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-        // 桌面单用户：单连接即可，事务语义与旧版完全一致
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .with_context(|| format!("open sqlite: {path}"))?;
-        let store = Self::Sqlite(pool);
-        store.init().await?;
-        Ok(store)
-    }
-
-    pub async fn open_in_memory() -> Result<Self> {
-        let options = SqliteConnectOptions::from_str("sqlite::memory:")?;
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await?;
-        let store = Self::Sqlite(pool);
-        store.init().await?;
-        Ok(store)
-    }
-
-    /// 仅供测试：建表但不灌业务数据（认证账号仍会初始化）。
-    pub async fn empty_in_memory() -> Result<Self> {
-        let options = SqliteConnectOptions::from_str("sqlite::memory:")?;
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await?;
-        let store = Self::Sqlite(pool);
-        store.apply_schema().await?;
-        Ok(store)
+        Self::open_postgres(uri).await
     }
 
     pub async fn open_postgres(url: &str) -> Result<Self> {
@@ -526,48 +353,25 @@ impl Store {
             .connect(url)
             .await
             .context("connect postgres")?;
-        let store = Self::Postgres(pool);
+        let store = Self(pool);
         store.init().await?;
         Ok(store)
     }
 
-    pub fn is_postgres(&self) -> bool {
-        matches!(self, Store::Postgres(_))
-    }
-
-    async fn apply_schema(&self) -> Result<()> {
-        match self {
-            Store::Sqlite(pool) => {
-                sqlx::raw_sql(SCHEMA_SQLITE).execute(pool).await?;
-            }
-            Store::Postgres(pool) => {
-                sqlx::raw_sql(SCHEMA_PG).execute(pool).await?;
-            }
-        }
+    pub(crate) async fn apply_schema(&self) -> Result<()> {
+        sqlx::raw_sql(SCHEMA_PG).execute(&self.0).await?;
         Ok(())
     }
 
     async fn run_batch(&self, sql: &str) -> Result<()> {
-        match self {
-            Store::Sqlite(pool) => {
-                sqlx::raw_sql(sql).execute(pool).await?;
-            }
-            Store::Postgres(pool) => {
-                sqlx::raw_sql(sql).execute(pool).await?;
-            }
-        }
+        sqlx::raw_sql(sql).execute(&self.0).await?;
         Ok(())
     }
 
-    /// 列是否存在：SQLite 查 pragma 表值函数，Postgres 查 information_schema。
+    /// 列是否存在：查 information_schema。
     async fn has_column(&self, table: &str, column: &str) -> Result<bool> {
-        let sql = if self.is_postgres() {
-            "SELECT COUNT(*) FROM information_schema.columns \
-             WHERE table_name=?1 AND column_name=?2"
-        } else {
-            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2"
-        };
-        // 复制一份连接池句柄（只复制 Arc），避免 &self 与 Repo 的 &mut self 冲突
+        let sql = "SELECT COUNT(*) FROM information_schema.columns \
+                   WHERE table_name=?1 AND column_name=?2";
         let db = self.clone();
         Ok(db.scalar_i64(sql, params![table, column]).await? > 0)
     }
@@ -594,7 +398,7 @@ impl Store {
 
     /// 建表 → 补列 → 幂等 seed → 演示账号。多实例同时启动时依赖 `IF NOT EXISTS` /
     /// `ON CONFLICT DO NOTHING` 保证幂等，不会互相覆盖。
-    async fn init(&self) -> Result<()> {
+    pub(crate) async fn init(&self) -> Result<()> {
         self.apply_schema().await?;
         self.migrate_columns().await?;
         self.ensure_seed().await?;
@@ -650,7 +454,7 @@ impl Store {
             .map(str::to_string))
     }
 
-    /// 写配置项（不存在则插入）。SQLite / Postgres 共用 `ON CONFLICT` 语法。
+    /// 写配置项（不存在则插入），依赖 Postgres 的 `ON CONFLICT` 语法。
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         self.execute(
             "INSERT INTO settings(key, value) VALUES(?1, ?2) \
@@ -671,18 +475,12 @@ impl Store {
     /* ---------------- 基础执行器（自动提交） ---------------- */
 
     pub async fn execute(&self, sql: &str, params: Params<'_>) -> Result<usize> {
-        let n = match self {
-            Store::Sqlite(pool) => execute_sqlite(pool, sql, params).await?,
-            Store::Postgres(pool) => execute_pg(pool, sql, params).await?,
-        };
+        let n = execute_pg(&self.0, sql, params).await?;
         Ok(n as usize)
     }
 
     pub async fn scalar_i64(&self, sql: &str, params: Params<'_>) -> Result<i64> {
-        let rows = match self {
-            Store::Sqlite(pool) => fetch_sqlite(pool, sql, params).await?,
-            Store::Postgres(pool) => fetch_pg(pool, sql, params).await?,
-        };
+        let rows = fetch_pg(&self.0, sql, params).await?;
         rows.first()
             .and_then(|r| r.as_object())
             .and_then(|o| o.values().next())
@@ -691,10 +489,7 @@ impl Store {
     }
 
     pub async fn query_json(&self, sql: &str, params: Params<'_>) -> Result<Vec<Value>> {
-        match self {
-            Store::Sqlite(pool) => fetch_sqlite(pool, sql, params).await,
-            Store::Postgres(pool) => fetch_pg(pool, sql, params).await,
-        }
+        fetch_pg(&self.0, sql, params).await
     }
 
     pub async fn query_all(&self, sql: &str) -> Result<Vec<Value>> {
@@ -706,32 +501,15 @@ impl Store {
     where
         F: for<'a> FnOnce(&'a mut dyn Repo) -> BoxFuture<'a, Result<T>>,
     {
-        match self {
-            Store::Sqlite(pool) => {
-                let mut tx = Tx::Sqlite(pool.begin().await?);
-                match f(&mut tx).await {
-                    Ok(v) => {
-                        tx.commit().await?;
-                        Ok(v)
-                    }
-                    Err(e) => {
-                        let _ = tx.rollback().await;
-                        Err(e)
-                    }
-                }
+        let mut tx = Tx::new(self.0.begin().await?);
+        match f(&mut tx).await {
+            Ok(v) => {
+                tx.commit().await?;
+                Ok(v)
             }
-            Store::Postgres(pool) => {
-                let mut tx = Tx::Postgres(pool.begin().await?);
-                match f(&mut tx).await {
-                    Ok(v) => {
-                        tx.commit().await?;
-                        Ok(v)
-                    }
-                    Err(e) => {
-                        let _ = tx.rollback().await;
-                        Err(e)
-                    }
-                }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
             }
         }
     }
@@ -1105,7 +883,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema_and_seed_are_complete() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         assert!(db.is_seeded().await.unwrap());
         for t in domain::TABLE_NAMES {
             let n = db
@@ -1118,7 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn seed_is_idempotent() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let before = db
             .scalar_i64("SELECT COUNT(*) FROM employees", &[])
             .await
@@ -1134,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_restores_seed() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         db.execute("DELETE FROM employees WHERE id='E01'", &[])
             .await
             .unwrap();
@@ -1155,7 +933,7 @@ mod tests {
 
     #[tokio::test]
     async fn table_rows_respect_role_scope() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (_, admin) = db.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, employee) = db.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
@@ -1191,7 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn transaction_rolls_back() {
-        let db = Store::empty_in_memory().await.unwrap();
+        let db = crate::test_support::empty_store().await;
         let result: Result<()> = db
             .transaction(|tx| {
                 Box::pin(async move {
@@ -1212,7 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_id_is_atomic_under_concurrency() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let mut handles = Vec::new();
         for _ in 0..8 {
             let db = db.clone();

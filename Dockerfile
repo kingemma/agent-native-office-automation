@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 #
 # oa-server 生产镜像。
-# 客户端（桌面 / 移动 / 浏览器）只是 REST 客户端，服务端是唯一数据源，
-# 所以对外发布真正要部署的就是这个进程 + 一个持久化数据目录。
+# 客户端（桌面 / 移动 / 浏览器）只是 REST 客户端，服务端是唯一数据源。
+# 数据库由独立的 Postgres 容器（或外部实例）提供，本镜像只承载服务端进程与附件目录。
 #
-# 构建：docker build -t oa-server:0.1.0 .
-# 运行：docker run -d -p 8787:8787 -v oa-data:/data --name oa-server oa-server:0.1.0
-# 访问：浏览器打开 http://localhost:8787 （前后端同源，API 走相对路径 /api）
+# 构建并运行：docker compose up -d --build
+# 单独构建：  docker build -t oa-server:0.1.0 .
+# 访问：      浏览器打开 http://localhost:8787 （前后端同源，API 走相对路径 /api）
 #
 # 用 rust:1-bookworm 而非 alpine：oa-core 走 native-tls（系统 OpenSSL），
 # musl 目标需要另装 openssl-dev 且链接行为不同，debian 这条路径更接近本机验证环境。
@@ -52,7 +52,7 @@ COPY --from=build /usr/local/bin/oa-server /usr/local/bin/oa-server
 # 前端静态资源：与 API 同源，由 oa-server 的 ServeDir fallback 托管
 COPY --from=web-build /web/dist /usr/share/oa/web
 
-# 数据目录（oa.db + oa-files/）必须落在卷上，容器重建不丢数据
+# 附件目录必须落在卷上，容器重建不丢文件；数据库在 Postgres 容器中持久化
 RUN useradd --system --uid 10001 --create-home oa && \
     mkdir -p /data/oa-files && \
     chown -R oa:oa /data
@@ -60,15 +60,15 @@ RUN useradd --system --uid 10001 --create-home oa && \
 USER oa
 WORKDIR /data
 
+# OA_DB 由 compose / 部署环境显式提供，镜像不内置任何数据库地址
 ENV OA_ADDR=0.0.0.0:8787 \
-    OA_DB=/data/oa.db \
     OA_FILES=/data/oa-files \
     OA_WEB_ROOT=/usr/share/oa/web
 
 EXPOSE 8787
-VOLUME ["/data"]
+VOLUME ["/data/oa-files"]
 
-# 起始等待给足 10s：首次启动要建库 + 写种子数据
+# 起始等待给足 10s：首次启动要建表 + 写种子数据
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${OA_ADDR##*:}/api/health" || exit 1
 

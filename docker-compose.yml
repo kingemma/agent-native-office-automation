@@ -1,0 +1,40 @@
+name: agent-native-oa
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-oa}
+      POSTGRES_USER: ${POSTGRES_USER:-oa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oa}
+    volumes:
+      - oa-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oa} -d ${POSTGRES_DB:-oa}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  oa-server:
+    build: .
+    image: oa-server:0.1.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8787:8787"
+    environment:
+      OA_ADDR: 0.0.0.0:8787
+      OA_DB: postgresql://${POSTGRES_USER:-oa}:${POSTGRES_PASSWORD:-oa}@postgres:5432/${POSTGRES_DB:-oa}
+      OA_FILES: /data/oa-files
+      OA_WEB_ROOT: /usr/share/oa/web
+      OA_INSTANCE: ${OA_INSTANCE:-docker}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - oa-files:/data/oa-files
+
+volumes:
+  oa-data:
+  oa-files:

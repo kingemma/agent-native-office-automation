@@ -1,7 +1,7 @@
-//! 时间语义集中在这里，避免再依赖 SQLite 的 `date()/strftime()`：
+//! 时间语义集中在这里，避免依赖数据库的日期函数：
 //! - 业务日期（考勤、合同到期、报表月份）用**本地时区**，符合办公场景直觉；
-//! - 会话/审计时间戳用 **UTC**，与 SQLite `CURRENT_TIMESTAMP` 和 Postgres 的
-//!   `to_char(now() AT TIME ZONE 'UTC', ...)` 保持同一种字符串格式，跨库可直接比较。
+//! - 会话/审计时间戳用 **UTC**，与 Postgres 的
+//!   `to_char(now() AT TIME ZONE 'UTC', ...)` 保持同一种字符串格式。
 
 use chrono::{Datelike, Duration, Local, Utc};
 
@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_have_sqlite_compatible_format() {
+    fn timestamps_have_stable_string_format() {
         let now = utc_now();
         assert_eq!(now.len(), 19, "{now}");
         assert_eq!(&now[4..5], "-");

@@ -370,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn upload_list_read_delete_roundtrip() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (_, admin) = db.login("evan", DEFAULT_PASSWORD).await.unwrap();
         let root = temp_root("ok");
         let payload = b64_encode(b"\x89PNG\r\n\x1a\n demo-invoice");
@@ -403,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn scope_and_type_validation_are_enforced() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let (_, employee) = db.login("lina", DEFAULT_PASSWORD).await.unwrap();
         let (_, finance) = db.login("wuhao", DEFAULT_PASSWORD).await.unwrap();
         let root = temp_root("scope");

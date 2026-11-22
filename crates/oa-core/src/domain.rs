@@ -411,7 +411,7 @@ pub const FEATURES: &[(&str, &str, &str)] = &[
     ("CF-01", "custom", "全局自定义字段库：管理员定义字段，四类单据创建时填写"),
     ("CF-02", "custom", "字段值 EAV 落库，随记录详情展示、不污染固定列"),
     ("PL-01", "platform", "五端统一 REST（浏览器/Windows/macOS/Linux/移动端同一套接口）"),
-    ("PL-02", "platform", "SQLite 离线库 + 幂等 seed + 一键重置"),
+    ("PL-02", "platform", "Postgres 统一数据源 + 幂等 seed + 一键重置"),
     ("PL-03", "platform", "工作台 KPI 与审计查询"),
 ];
 

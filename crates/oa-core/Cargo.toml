@@ -14,7 +14,7 @@ native-tls = ["rig/native-tls"]
 rustls = ["rig/rustls"]
 
 [dependencies]
-# Rig 0.46 facade crate：提供 AgentBuilder / Agent / Tool / Hook / 多模型路由
+# Rig 0.46 facade crate：提供 AgentBuilder / Agent / Tool / 多模型路由（Hook 能力未启用）
 # （rig-core 0.46 只是底层契约 crate，Agent 运行时在 facade 中）。
 # 关闭 default-features 是为了不启用 rig 默认的 rustls 后端；TLS 由上面的 feature 选择。
 rig = { version = "0.46", default-features = false, features = ["agent", "derive", "reqwest"] }
@@ -23,8 +23,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 regex = "1"
-# 双后端：SQLite（桌面/测试）+ Postgres（多实例服务端），同一套仓储接口
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres", "sqlite"] }
+# 服务端唯一数据库：Postgres（移动端只走 REST API，不连数据库）
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-native-tls", "postgres"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 async-trait = "0.1"
 futures = "0.3"
@@ -35,3 +35,9 @@ sha2 = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # 资产二维码：纯 Rust 生成 SVG，无需 C 工具链
 qrcode = "0.14"
+
+[dev-dependencies]
+# 单元测试用真实 Postgres：testcontainers 自动起共享容器，每个测试独立 schema
+testcontainers = "0.24"
+testcontainers-modules = { version = "0.12", features = ["postgres"] }
+uuid = { version = "1", features = ["v4"] }

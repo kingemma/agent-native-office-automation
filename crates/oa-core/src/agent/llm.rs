@@ -407,7 +407,6 @@ pub async fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
 
     #[test]
     fn presets_cover_the_four_required_providers() {
@@ -450,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_roundtrip_and_precedence() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         assert!(db.setting(SETTING_KEY).await.unwrap().is_none());
 
         // 落库后 describe 只回掩码，且来源是 db

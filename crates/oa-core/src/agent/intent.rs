@@ -1,7 +1,7 @@
 //! 离线确定性意图引擎（Agent 的本地执行模式）。
 //!
 //! 存在的意义：**功能完整性不依赖外部 LLM 密钥**。没有 OPENAI_API_KEY 时，
-//! 自然语言仍可解析成执行计划并驱动全部 19 个工具；配置密钥后切
+//! 自然语言仍可解析成执行计划并驱动全部 23 个工具；配置密钥后切
 //! `OA_AGENT_MODE=llm` 由 Rig + 真实模型接管，工具与业务代码零改动。
 //!
 //! 与 tools::TOOL_SPECS 共用同一套工具契约，支持中英双语与多步编排。
@@ -829,7 +829,6 @@ pub async fn run_local_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
 
     #[test]
     fn money_parsing() {
@@ -851,7 +850,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_covers_all_domains_in_both_languages() {
-        let mut db = Store::open_in_memory().await.unwrap();
+        let mut db = crate::test_support::test_store().await;
         let cases = [
             ("为许知远办理入职，研发中心 / 前端工程师，11月18日报到，月薪 18000", "hr.onboard"),
             ("给李娜涨薪到 26000，12月1日生效", "hr.promote"),
@@ -893,7 +892,7 @@ mod tests {
 
     #[tokio::test]
     async fn onboarding_is_multi_step_with_cross_module_ref() {
-        let mut db = Store::open_in_memory().await.unwrap();
+        let mut db = crate::test_support::test_store().await;
         let steps = plan(&mut db, "为许知远办理入职，研发中心前端工程师，月薪 18000")
             .await
             .unwrap();
@@ -911,14 +910,14 @@ mod tests {
 
     #[tokio::test]
     async fn help_has_no_steps() {
-        let mut db = Store::open_in_memory().await.unwrap();
+        let mut db = crate::test_support::test_store().await;
         assert!(plan(&mut db, "帮助").await.unwrap().is_empty());
         assert!(help_text(false).contains(&domain::TOOL_NAMES.len().to_string()));
     }
 
     #[tokio::test]
     async fn run_local_executes_multi_step_and_stops_for_confirmation() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app
             .store
             .login("evan", crate::auth::DEFAULT_PASSWORD)
@@ -953,7 +952,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_local_reports_permission_denied_without_writing() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app
             .store
             .login("lina", crate::auth::DEFAULT_PASSWORD)

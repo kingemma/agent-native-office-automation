@@ -1,4 +1,4 @@
-//! Agent 工具集 · 19 个强类型 Tool，JSON Schema 由 TOOL_SPECS 单点生成。
+//! Agent 工具集 · 23 个强类型 Tool，JSON Schema 由 TOOL_SPECS 单点生成。
 //!
 //! 采用 Rig 0.46 的 `Tool` trait（`const NAME` / `Args` / `Output` / `call`）。
 //! 每个工具用宏生成轻量 struct，共享 `call()` → `run_sql()` 分发，避免 19 份重复样板。
@@ -740,7 +740,7 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
             "ok": false,
             "needs_confirmation": true,
             "tool": name,
-            "message": "敏感操作需人工确认：请追加 confirmed=true 后重试（生产由 AgentHook 拦截转审批）",
+            "message": "敏感操作需人工确认：请追加 confirmed=true 后重试（由前端确认弹窗与工具层门禁协作完成）",
             "msg": "敏感操作需人工确认"
         });
         let _ = state.store.audit(name, user.actor(), &args, &out).await;
@@ -777,7 +777,7 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
     out
 }
 
-/* ---------------- 19 个工具的真实业务实现 ---------------- */
+/* ---------------- 23 个工具的真实业务实现 ---------------- */
 
 async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
     match name {
@@ -787,7 +787,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let position = o(a, &["position"]).unwrap_or_else(|| "员工".into());
             let salary = cents(a, "salary");
             let entry = o(a, &["entry_date", "entryDate"]).unwrap_or_else(|| "".into());
-            // 默认入职日用 Rust 侧算：date('now') 是 SQLite 专有函数，Postgres 下会报错
+            // 默认入职日用 Rust 侧算：Postgres 没有 date('now') 函数
             let entry = if entry.is_empty() { today() } else { entry };
             let manager = o(a, &["manager_id", "managerId"]);
 
@@ -1089,7 +1089,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             db.execute(
                 "INSERT INTO claims(id,kind,applicant_id,dept_id,amount_cents,purpose,project,status,submitted_at,approver_id,budget_ok)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,'pending',?8,?9,?10)",
-                // 日期用 Rust 侧生成：SQLite 的 date('now') 在 Postgres 里不存在
+                // 日期用 Rust 侧生成：Postgres 没有 date('now') 函数
                 params![id, kind, applicant, dept, amount, purpose, project, today(), first, budget_ok as i64],
             ).await?;
             if budget_ok {
@@ -1191,7 +1191,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                     let dept_id = row["dept_id"].as_str().unwrap_or("ALL");
                     let (key, _, _) = budget_row(db, dept_id).await?;
                     db.execute(
-                        "UPDATE budgets SET used_cents=MAX(0, used_cents-?1) WHERE year=?2 AND dept_id=?3",
+                        "UPDATE budgets SET used_cents=GREATEST(0, used_cents-?1) WHERE year=?2 AND dept_id=?3",
                         params![amount_cents, year().parse::<i64>().unwrap_or(2026), key],
                     )
                     .await?;
@@ -1294,7 +1294,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let sign = o(a, &["sign_date", "signDate"]).unwrap_or_else(|| today());
             let sign = if sign.is_empty() { today() } else { sign };
             let expire = o(a, &["expire_date", "expireDate"]).unwrap_or_default();
-            // 默认到期日放到 Rust 侧算：SQLite 的 date('now','+1 year') 在 Postgres 里不存在
+            // 默认到期日放到 Rust 侧算：Postgres 没有 date('now','+1 year') 函数
             let expire = if expire.is_empty() { clock::date_offset(365) } else { expire };
             let owner = o(a, &["owner_id", "ownerId"]).unwrap_or_else(|| "E01".into());
 
@@ -1453,7 +1453,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  ORDER BY expire_date LIMIT 200",
                 params![status, kw],
             ).await?;
-            // 到期窗口用 Rust 侧算：date('now') / date('now','+N day') 是 SQLite 专有
+            // 到期窗口用 Rust 侧算：Postgres 没有 date('now','+N day') 函数
             let (from, to) = (today(), clock::date_offset(days));
             let expiring = db.query_json(
                 "SELECT * FROM contracts WHERE status <> 'archived'
@@ -1736,7 +1736,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 let hours = (row["hours_raw"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0;
                 let mut obj = row;
                 if let Some(map) = obj.as_object_mut() {
-                    // SQLite/Postgres 的 ROUND 语义不一致，四舍五入统一在 Rust 侧做
+                    // 四舍五入统一在 Rust 侧做，避免依赖数据库的 ROUND 语义
                     map.insert("hours".into(), json!(hours));
                     map.insert("attendance_rate".into(), json!(rate));
                     map.remove("hours_raw");
@@ -1948,7 +1948,6 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::domain::TOOL_NAMES;
-    use crate::store::Store;
 
     #[test]
     fn wire_tool_names_are_llm_safe_and_reversible() {
@@ -2003,7 +2002,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_fields_flow_define_write_and_remove() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
         // 只接受 cf_ 前缀与四类合法 entity_type
@@ -2050,7 +2049,7 @@ mod tests {
 
     #[tokio::test]
     async fn rbac_blocks_direct_tool_calls_and_audits() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app
             .store
             .login("lina", crate::auth::DEFAULT_PASSWORD)
@@ -2074,7 +2073,7 @@ mod tests {
 
     #[tokio::test]
     async fn employee_cannot_operate_on_behalf_of_others() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app
             .store
             .login("lina", crate::auth::DEFAULT_PASSWORD)
@@ -2102,7 +2101,7 @@ mod tests {
     /// 1.5 万元报销 → 两级审批（直属主管 E02 → 财务经理 E10），逐级推进而不是一次批完。
     #[tokio::test]
     async fn claim_approval_walks_chain_step_by_step() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
@@ -2185,7 +2184,7 @@ mod tests {
     /// 驳回要终止整条链并释放已占用的预算。
     #[tokio::test]
     async fn claim_reject_stops_chain_and_releases_budget() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
@@ -2233,7 +2232,7 @@ mod tests {
     /// 申请人本人就是部门主管时，审批链要上溯到他自己的上级，不能自己审自己。
     #[tokio::test]
     async fn applicant_is_never_his_own_approver() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, manager) = app.store.login("chenli", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
         let created = call(
@@ -2255,7 +2254,7 @@ mod tests {
     /// 报销总额以费用明细合计为准，明细逐条落库并带发票与发生日期。
     #[tokio::test]
     async fn claim_items_drive_total_and_are_persisted() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
         let created = call(
@@ -2298,7 +2297,7 @@ mod tests {
     /// 明细缺类别或金额为 0 时直接拒绝，且事务回滚不留下半张单。
     #[tokio::test]
     async fn invalid_claim_items_are_rejected() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let before = app
             .store
@@ -2355,7 +2354,7 @@ mod tests {
     /// 本年 ALL 预算剩余 35.74 万（120 万 − 84.26 万），申请 100 万必然超额。
     #[tokio::test]
     async fn over_budget_claim_is_rejected() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let before = app
             .store
@@ -2391,7 +2390,7 @@ mod tests {
     /// 逐级流转，末级通过才生效；不是审批人的同级角色也过不了门禁。
     #[tokio::test]
     async fn contract_approval_walks_legal_then_seal() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, manager) = app.store.login("chenli", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, finance) = app.store.login("wuhao", crate::auth::DEFAULT_PASSWORD).await.unwrap();
@@ -2469,7 +2468,7 @@ mod tests {
     /// 驳回终止整条链，合同转为 rejected 后不能再审。
     #[tokio::test]
     async fn contract_reject_terminates_chain() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, manager) = app.store.login("chenli", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, finance) = app.store.login("wuhao", crate::auth::DEFAULT_PASSWORD).await.unwrap();
@@ -2508,7 +2507,7 @@ mod tests {
     /// 费用标准：超标明细必须带说明，否则整单拒收且不落库；带说明则入库并回传超标清单。
     #[tokio::test]
     async fn over_standard_items_require_a_note() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let before = app
             .store
@@ -2575,7 +2574,7 @@ mod tests {
     /// 补卡：申请只写请求与审批流，主管通过后才补入考勤；驳回不留考勤数据。
     #[tokio::test]
     async fn makeup_is_written_to_attendance_only_after_approval() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, manager) = app.store.login("chenli", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
@@ -2673,7 +2672,7 @@ mod tests {
         assert_eq!(again["ok"], false, "{again}");
 
         // 驳回场景：另一天补卡被拒后不写考勤
-        let app2 = AppState::new(Store::open_in_memory().await.unwrap());
+        let app2 = AppState::new(crate::test_support::test_store().await);
         let (_, manager2) = app2.store.login("chenli", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let (_, employee2) = app2.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
         let req = call(
@@ -2703,7 +2702,7 @@ mod tests {
     /// 演示数据里的合同审批链也必须是员工号，否则前端「待你审批」永远匹配不到人。
     #[tokio::test]
     async fn seeded_contract_chain_is_person_based() {
-        let db = Store::open_in_memory().await.unwrap();
+        let db = crate::test_support::test_store().await;
         let rows = db
             .query_json(
                 "SELECT approver FROM approval_flows
@@ -2720,7 +2719,7 @@ mod tests {
     /// 人事异动审批链是真实可推进的：入职单逐级流转（直属主管 → HRBP → 行政），末级通过才 approved。
     #[tokio::test]
     async fn hr_case_approval_walks_chain() {
-        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let app = AppState::new(crate::test_support::test_store().await);
         let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
 
         let created = call(

@@ -7,10 +7,10 @@ frontend/*.log
 tools/
 deploy/
 
-# 运行期数据，绝不能进镜像
-oa.db
-oa.db-shm
-oa.db-wal
+# 运行期数据与凭据，绝不能进镜像
+.env
+.env.*
+*.db
 oa-files/
 
 # 版本控制与本机状态

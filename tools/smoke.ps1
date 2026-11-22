@@ -1,7 +1,7 @@
 # 驭工 OA · REST 端点冒烟测试
 #
 # 用法：.\tools\smoke.ps1
-# 前置：已执行 cargo build -p oa-server（或 .\tools\smoke.ps1 -Build）
+# 前置：已执行 cargo build -p oa-server（或 .\tools\smoke.ps1 -Build）；Docker 正在运行（未设 OA_DB 时会起一次性 Postgres）
 # 覆盖：未授权 401、登录、会话、指标、工具清单、计划预览、Agent 本地执行、
 #       多步编排的确认门禁、RBAC 拒绝、审计、重置权限、合同两级审批、
 #       附件上传/读取/删除与越权拦截、费用标准超标拦截、补卡审批后写考勤、
@@ -17,8 +17,9 @@ $Exe = if ($OnWindows) {
 else {
     Join-Path $Root 'target/debug/oa-server'
 }
-$Db = Join-Path $Root 'target/smoke.db'
 $Base = 'http://127.0.0.1:18787'
+$OwnedPg = $false
+$SmokePgName = "oa-smoke-pg-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 
 if ($Build -or -not (Test-Path $Exe)) {
     Push-Location $Root
@@ -38,11 +39,35 @@ if ($Build -or -not (Test-Path $Exe)) {
     if ($buildExit -ne 0) { throw 'cargo build -p oa-server failed' }
 }
 
-if (Test-Path $Db) { Remove-Item $Db }
-# 附件落盘目录也隔离到 target 下，跑完即删
+# 附件落盘目录隔离到 target 下，跑完即删
 $Files = Join-Path $Root 'target/smoke-files'
 if (Test-Path $Files) { Remove-Item $Files -Recurse -Force }
-$env:OA_DB = $Db
+
+# 未指定 OA_DB 时起一个一次性 Postgres；指定时由调用方负责库生命周期
+if ($env:OA_DB) {
+    Write-Host "→ 使用外部 Postgres：$($env:OA_DB -replace ':[^:@/]+@', ':***@')"
+}
+else {
+    $null = docker run -d --rm --name $SmokePgName `
+        -e POSTGRES_USER=oa -e POSTGRES_PASSWORD=oa -e POSTGRES_DB=oa `
+        -p 127.0.0.1::5432 postgres:16-alpine
+    if ($LASTEXITCODE -ne 0) { throw '启动临时 Postgres 失败：请确认 Docker Desktop 正在运行' }
+    $OwnedPg = $true
+    $portLine = (& docker port $SmokePgName '5432/tcp' | Select-Object -First 1).Trim()
+    $pgPort = ($portLine -split ':')[-1]
+    $env:OA_DB = "postgresql://oa:oa@127.0.0.1:$pgPort/oa"
+    Write-Host "→ 已启动临时 Postgres（$SmokePgName，端口 $pgPort）"
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        $null = & docker exec $SmokePgName pg_isready -U oa -d oa 2>$null
+        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $ready) {
+        $null = & docker stop $SmokePgName 2>$null
+        throw '临时 Postgres 30s 内未就绪'
+    }
+}
 $env:OA_FILES = $Files
 $env:OA_ADDR = '127.0.0.1:18787'
 $env:OA_AGENT_MODE = 'local'
@@ -273,9 +298,8 @@ try {
 }
 finally {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-    # 等进程真正退出再删临时库，否则 SQLite 句柄未释放会删不掉
     $null = $proc.WaitForExit(5000)
-    if (Test-Path $Db) { Remove-Item $Db -ErrorAction SilentlyContinue }
+    if ($OwnedPg) { $null = & docker stop $SmokePgName 2>$null }
     if (Test-Path $Files) { Remove-Item $Files -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
