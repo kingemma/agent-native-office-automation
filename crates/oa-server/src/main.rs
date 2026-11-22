@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 struct WebState {
@@ -665,6 +666,19 @@ async fn main() -> anyhow::Result<()> {
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(cors)
         .with_state(state);
+
+    // 静态前端：容器里把 Vite 的 dist 拷到 OA_WEB_ROOT；未匹配的非 API 路径回 index.html，
+    // 支持前端路由刷新。本机开发未设该变量时不挂载，行为与原来完全一致。
+    let app = if let Some(root) = std::env::var("OA_WEB_ROOT").ok().filter(|v| !v.trim().is_empty()) {
+        let index = std::path::Path::new(&root).join("index.html");
+        if !index.exists() {
+            return Err(anyhow::anyhow!("OA_WEB_ROOT={root} 下找不到 index.html"));
+        }
+        let spa = ServeDir::new(&root).fallback(ServeFile::new(index));
+        app.fallback_service(spa)
+    } else {
+        app
+    };
 
     // 默认监听所有网卡：桌面/移动端需要经局域网 IP 访问，仅绑 127.0.0.1 会连不上。
     // 只允许本机访问时显式设置 OA_ADDR=127.0.0.1:8787。

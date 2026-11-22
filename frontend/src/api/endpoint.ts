@@ -117,12 +117,13 @@ export function applyEndpoint(state: EndpointState): void {
 /** 探测一个地址：`/api/health` 200 且 `ok:true` 视为可达 */
 export async function probe(base: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<ProbeResult> {
   const target = normalizeBase(base)
-  if (!target) return { ok: false, ms: 0, error: '地址为空' }
+  // 空地址表示同源（容器化部署：前端与 API 同一端口），fetch('/api/health') 即探测当前主机
+  const url = `${target}/api/health`
   const started = Date.now()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(`${target}/api/health`, { signal: controller.signal })
+    const res = await fetch(url, { signal: controller.signal })
     const ms = Date.now() - started
     if (!res.ok) return { ok: false, ms, error: `HTTP ${res.status}` }
     const body = (await res.json()) as { ok?: boolean }
@@ -144,7 +145,7 @@ export async function resolveEndpoint(cfg: EndpointConfig = loadEndpoints()): Pr
   if (saved.wan && saved.wan !== saved.lan) candidates.push({ mode: 'wan', base: saved.wan })
 
   for (const candidate of candidates) {
-    if (!candidate.base) continue
+    // 空 base 表示同源，是容器化部署的有效候选，不能跳过
     const result = await probe(candidate.base)
     if (result.ok) {
       const state: EndpointState = {
