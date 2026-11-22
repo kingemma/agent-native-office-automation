@@ -374,10 +374,10 @@ async fn run_llm(
                 ..
             })) => reasoning.push_str(&chunk),
             MultiTurnStreamItem::ToolCall { tool_call } => {
-                thinker.say("tool", format!("模型请求调用 `{}`", tool_call.function.name));
+                thinker.say("tool", format!("模型请求调用 `{}`", tools::display_tool_name(&tool_call.function.name)));
             }
             MultiTurnStreamItem::ToolResult { tool_result } => {
-                thinker.say("tool", format!("`{}` 已返回结果", tool_result.name));
+                thinker.say("tool", format!("`{}` 已返回结果", tools::display_tool_name(&tool_result.name)));
             }
             MultiTurnStreamItem::FinalResponse(response) => final_text = Some(response.output()),
             _ => {}

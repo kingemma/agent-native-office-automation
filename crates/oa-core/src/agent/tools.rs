@@ -156,58 +156,96 @@ pub fn specs_for(user: &SessionUser) -> Vec<Value> {
         .collect()
 }
 
+/// 注册工具：wire 名发给 LLM（须符合 OpenAI `^[a-zA-Z0-9_-]+$`），
+/// internal 名用于 schema 查询与 call 派发（保持项目既有点号名不变）。
 macro_rules! oa_tool {
-    ($ty:ident, $name:literal) => {
+    ($ty:ident, $wire:literal, $internal:literal) => {
         pub struct $ty {
             pub state: AppState,
             pub user: SessionUser,
         }
         impl Tool for $ty {
-            const NAME: &'static str = $name;
+            const NAME: &'static str = $wire;
             type Args = Value;
             type Output = Value;
             type Error = ToolExecutionError;
 
             fn description(&self) -> String {
-                spec_desc($name)
+                spec_desc($internal)
             }
             fn parameters(&self) -> Value {
-                tool_schema($name)
+                tool_schema($internal)
             }
             async fn call(
                 &self,
                 _ctx: &mut ToolContext,
                 args: Value,
             ) -> Result<Value, ToolExecutionError> {
-                Ok(call(self.state.clone(), &self.user, $name, args).await)
+                Ok(call(self.state.clone(), &self.user, $internal, args).await)
             }
         }
     };
 }
 
-oa_tool!(HrOnboard, "hr.onboard");
-oa_tool!(HrOffboard, "hr.offboard");
-oa_tool!(HrPromote, "hr.promote");
-oa_tool!(HrApprove, "hr.approve");
-oa_tool!(HrRosterQuery, "hr.roster.query");
-oa_tool!(OrgChart, "org.chart");
-oa_tool!(ClaimCreate, "finance.claim.create");
-oa_tool!(ClaimApprove, "finance.claim.approve");
-oa_tool!(FinanceSummary, "finance.summary");
-oa_tool!(ContractCreate, "contract.create");
-oa_tool!(ContractApprove, "contract.approve");
-oa_tool!(ContractQuery, "contract.query");
-oa_tool!(AttendanceCheckin, "attendance.checkin");
-oa_tool!(AttendanceMakeup, "attendance.makeup");
-oa_tool!(AttendanceApprove, "attendance.approve");
-oa_tool!(AttendanceReport, "attendance.report");
-oa_tool!(AssetRegister, "asset.register");
-oa_tool!(AssetAssign, "asset.assign");
-oa_tool!(AssetReturn, "asset.return");
-oa_tool!(AssetQuery, "asset.query");
-oa_tool!(CustomFieldDefine, "custom.field.define");
-oa_tool!(CustomFieldList, "custom.field.list");
-oa_tool!(CustomFieldRemove, "custom.field.remove");
+oa_tool!(HrOnboard, "hr-onboard", "hr.onboard");
+oa_tool!(HrOffboard, "hr-offboard", "hr.offboard");
+oa_tool!(HrPromote, "hr-promote", "hr.promote");
+oa_tool!(HrApprove, "hr-approve", "hr.approve");
+oa_tool!(HrRosterQuery, "hr-roster-query", "hr.roster.query");
+oa_tool!(OrgChart, "org-chart", "org.chart");
+oa_tool!(ClaimCreate, "finance-claim-create", "finance.claim.create");
+oa_tool!(ClaimApprove, "finance-claim-approve", "finance.claim.approve");
+oa_tool!(FinanceSummary, "finance-summary", "finance.summary");
+oa_tool!(ContractCreate, "contract-create", "contract.create");
+oa_tool!(ContractApprove, "contract-approve", "contract.approve");
+oa_tool!(ContractQuery, "contract-query", "contract.query");
+oa_tool!(AttendanceCheckin, "attendance-checkin", "attendance.checkin");
+oa_tool!(AttendanceMakeup, "attendance-makeup", "attendance.makeup");
+oa_tool!(AttendanceApprove, "attendance-approve", "attendance.approve");
+oa_tool!(AttendanceReport, "attendance-report", "attendance.report");
+oa_tool!(AssetRegister, "asset-register", "asset.register");
+oa_tool!(AssetAssign, "asset-assign", "asset.assign");
+oa_tool!(AssetReturn, "asset-return", "asset.return");
+oa_tool!(AssetQuery, "asset-query", "asset.query");
+oa_tool!(CustomFieldDefine, "custom-field-define", "custom.field.define");
+oa_tool!(CustomFieldList, "custom-field-list", "custom.field.list");
+oa_tool!(CustomFieldRemove, "custom-field-remove", "custom.field.remove");
+
+/// 把内部点位名还原成工具有效显示名，供 Agent 展示工具调用轨迹使用。
+pub fn display_tool_name(wire: &str) -> &str {
+    WIRE_TO_INTERNAL
+        .iter()
+        .find(|(w, _)| *w == wire)
+        .map(|(_, internal)| *internal)
+        .unwrap_or(wire)
+}
+
+/// wire 名 ↔ 内部名的对照表，与上面的 oa_tool! 注册保持一致。
+pub const WIRE_TO_INTERNAL: &[(&str, &str)] = &[
+    ("hr-onboard", "hr.onboard"),
+    ("hr-offboard", "hr.offboard"),
+    ("hr-promote", "hr.promote"),
+    ("hr-approve", "hr.approve"),
+    ("hr-roster-query", "hr.roster.query"),
+    ("org-chart", "org.chart"),
+    ("finance-claim-create", "finance.claim.create"),
+    ("finance-claim-approve", "finance.claim.approve"),
+    ("finance-summary", "finance.summary"),
+    ("contract-create", "contract.create"),
+    ("contract-approve", "contract.approve"),
+    ("contract-query", "contract.query"),
+    ("attendance-checkin", "attendance.checkin"),
+    ("attendance-makeup", "attendance.makeup"),
+    ("attendance-approve", "attendance.approve"),
+    ("attendance-report", "attendance.report"),
+    ("asset-register", "asset.register"),
+    ("asset-assign", "asset.assign"),
+    ("asset-return", "asset.return"),
+    ("asset-query", "asset.query"),
+    ("custom-field-define", "custom.field.define"),
+    ("custom-field-list", "custom.field.list"),
+    ("custom-field-remove", "custom.field.remove"),
+];
 
 /* ---------------- 参数归一化 ---------------- */
 
@@ -1909,7 +1947,28 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::TOOL_NAMES;
     use crate::store::Store;
+
+    #[test]
+    fn wire_tool_names_are_llm_safe_and_reversible() {
+        // OpenAI function name 规范：只允许字母、数字、下划线、连字符
+        let valid = |s: &str| !s.is_empty()
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        assert_eq!(WIRE_TO_INTERNAL.len(), TOOL_NAMES.len());
+        for (wire, internal) in WIRE_TO_INTERNAL {
+            assert!(valid(wire), "wire 名不合法: {wire}");
+            assert!(TOOL_NAMES.contains(internal), "内部名不在注册表: {internal}");
+            // 连线字符还原点号后必须等于内部名
+            assert_eq!(wire.replace('-', "."), *internal, "{wire} ↔ {internal} 映射不一致");
+            assert_eq!(display_tool_name(wire), *internal);
+        }
+        // 内部名集合与 wire 名集合都必须无重复
+        let mut wires: Vec<_> = WIRE_TO_INTERNAL.iter().map(|(w, _)| *w).collect();
+        wires.sort_unstable();
+        wires.dedup();
+        assert_eq!(wires.len(), WIRE_TO_INTERNAL.len());
+    }
 
     #[test]
     fn arg_normalization_handles_frontend_aliases() {
