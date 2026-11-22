@@ -6,8 +6,10 @@ import { message } from 'ant-design-vue'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
 import ColumnPicker from '../components/ColumnPicker.vue'
+import CustomFieldForm from '../components/CustomFieldForm.vue'
 import AttachmentUploader from '../components/AttachmentUploader.vue'
 import { useColumns } from '../composables/useColumns'
+import { useCustomFields } from '../composables/useCustomFields'
 import { getMetrics, listTable, uploadAttachment, type Metrics } from '../api/bridge'
 import {
   CLAIM_ITEM_STANDARDS, CLAIM_TYPES, toClaim, toClaimItem, toDepartment, toEmployee, toFlow,
@@ -17,6 +19,7 @@ import { aliased, centsArgs, money, tagColor, wan } from '../utils'
 import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
+const custom = useCustomFields()
 const loading = ref(false)
 const error = ref('')
 const claims = ref<Claim[]>([])
@@ -43,6 +46,7 @@ async function load(): Promise<void> {
     metrics.value = me
     flows.value = fl.map(toFlow)
     claimItems.value = ci.map(toClaimItem)
+    await custom.reload()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -168,7 +172,12 @@ const detailRows = computed<{ k: string; v: string }[]>(() => {
     { k: t('finance.colAmount'), v: money(c.amount) }, { k: t('finance.colPurpose'), v: c.purpose },
     { k: t('finance.colProject'), v: c.project }, { k: t('finance.colStatus'), v: t('st.' + c.status) },
     { k: t('finance.colSubmit'), v: c.submitDate }, { k: t('finance.colApprover'), v: empName(c.approverId) },
-  ]
+  ].concat(
+    custom.valuesFor('claim', c.id).map((v) => ({
+      k: custom.allFields.value.find((f) => f.id === v.fieldId)?.label ?? v.fieldId,
+      v: v.value,
+    })),
+  )
 })
 function openDetail(row: Claim): void {
   detailRow.value = row
@@ -211,6 +220,8 @@ const claimForm = reactive({
   type: 'daily', applicantId: '', amount: 1000, purpose: '', project: '',
   items: [] as ItemDraft[],
 })
+const claimCustom = ref<Record<string, string>>({})
+const claimCustomRef = ref<InstanceType<typeof CustomFieldForm> | null>(null)
 const itemsTotal = computed(() =>
   claimForm.items.reduce((n, it) => n + (Number(it.amount) || 0), 0),
 )
@@ -286,6 +297,7 @@ function openClaim(): void {
   Object.assign(claimForm, {
     type: 'daily', applicantId, amount: 1000, purpose: '', project: '', items: [],
   })
+  claimCustom.value = custom.emptyValues('claim')
   stagedFiles.value = []
   claimOpen.value = true
 }
@@ -300,6 +312,10 @@ async function submitClaim(): Promise<void> {
   // 超标必须写说明：前端先挡一层，后端 parse_claim_items 仍会二次校验
   if (missingNotes.value > 0) {
     message.warning(t('finance.overNeedNote', { n: missingNotes.value }))
+    return
+  }
+  if (claimCustomRef.value && !claimCustomRef.value.validate()) {
+    message.warning(t('custom.requiredMissing'))
     return
   }
   submitting.value = true
@@ -324,6 +340,7 @@ async function submitClaim(): Promise<void> {
             note: it.note.trim(),
           }))
         : undefined,
+      custom_fields: custom.submissionValues('claim', claimCustom.value),
     }
     const res = await submitTool('finance.claim.create', args)
     if (!res.ok) return
@@ -539,6 +556,13 @@ async function submitClaim(): Promise<void> {
             </div>
           </div>
         </a-form-item>
+
+        <CustomFieldForm
+          ref="claimCustomRef"
+          entity-type="claim"
+          :values="claimCustom"
+          @update:values="claimCustom = $event"
+        />
 
         <!-- 填报附件：单号要创建后才有，先暂存，提交成功再随单上传 -->
         <a-form-item :label="t('attach.title')">

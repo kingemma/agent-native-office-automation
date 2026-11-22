@@ -79,6 +79,8 @@ pub fn can_use(role: &str, tool: &str) -> bool {
         "asset.register" => &["hr"],
         "asset.assign" | "asset.return" => &["hr", "manager"],
         "asset.query" => &["hr", "finance", "manager", "employee"],
+        // 字段库全员可读（创建表单要渲染）；定义/删除沿用默认仅 admin
+        "custom.field.list" => &["hr", "finance", "manager", "employee"],
         _ => &[],
     };
     allowed.contains(&role)

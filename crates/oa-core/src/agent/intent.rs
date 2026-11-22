@@ -196,6 +196,12 @@ pub fn makeup_id_of(text: &str) -> Option<String> {
     cap(&re, text, 0).map(str::to_uppercase)
 }
 
+/// 自定义字段 id：形如 cf_emergency_contact，大小写不敏感。
+pub fn field_id_of(text: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)\bcf_[a-z0-9_]{2,32}\b").unwrap();
+    cap(&re, text, 0).map(|s| s.to_ascii_lowercase())
+}
+
 pub fn category_of(text: &str) -> &'static str {
     let t = text.to_ascii_lowercase();
     if t.contains("笔记本") || t.contains("laptop") || t.contains("thinkpad") || t.contains("macbook") {
@@ -276,6 +282,37 @@ pub async fn plan_for(
     // 1. 帮助 / 能力清单
     if lower.contains("help") || lower.contains("帮助") || lower == "?" || lower == "？" {
         return Ok(vec![]);
+    }
+
+    // 字段库管理：与业务指令分开，避免「字段」字样被报销/花名册分支吞掉
+    if t.contains("自定义字段") || t.contains("字段库") || lower.contains("custom field") {
+        if t.contains("删除") || lower.contains("remove") || lower.contains("delete") {
+            let field_id = field_id_of(t).unwrap_or_default();
+            if !field_id.is_empty() {
+                return Ok(vec![step("custom.field.remove", json!({ "field_id": field_id }))]);
+            }
+        }
+        if t.contains("定义") || t.contains("新增") || t.contains("添加") || lower.contains("define") || lower.contains("add") {
+            let field_id = field_id_of(t).unwrap_or_default();
+            let entity_type = if t.contains("报销") { "claim" }
+                else if t.contains("合同") { "contract" }
+                else if t.contains("资产") { "asset" }
+                else { "employee" };
+            let field_type = if t.contains("下拉") { "select" }
+                else if t.contains("日期") { "date" }
+                else if t.contains("数字") { "number" }
+                else { "text" };
+            if !field_id.is_empty() {
+                let label = t.split("为").nth(1).unwrap_or(t).trim().to_string();
+                return Ok(vec![step("custom.field.define", json!({
+                    "field_id": field_id, "entity_type": entity_type,
+                    "label": json!({ "zh": label, "en": label }),
+                    "field_type": field_type,
+                    "options": if field_type == "select" { json!(["选项A", "选项B"]) } else { Value::Null }
+                }))]);
+            }
+        }
+        return Ok(vec![step("custom.field.list", json!({}))]);
     }
 
     // 2. 审批（补卡 / 合同 / 报销共用「审批」字样，按关键字依次分流）

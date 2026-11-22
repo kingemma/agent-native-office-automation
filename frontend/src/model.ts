@@ -267,6 +267,66 @@ export function toAsset(r: Row): Asset {
   }
 }
 
+/* ---------------- 自定义字段库 ---------------- */
+
+/** 自定义字段适用的业务实体，与 Rust `custom.field.define` 的 entity_type 校验一致 */
+export type CustomEntityType = 'employee' | 'claim' | 'contract' | 'asset'
+export type CustomFieldType = 'text' | 'number' | 'date' | 'select'
+
+export interface CustomField {
+  id: string
+  entityType: CustomEntityType
+  label: string
+  fieldType: CustomFieldType
+  options: string[]
+  required: boolean
+  sortOrder: number
+  enabled: boolean
+}
+
+export interface CustomFieldValue {
+  entityType: CustomEntityType
+  entityId: string
+  fieldId: string
+  value: string
+}
+
+/** label 是 {"zh","en"} JSON，options 是选项 JSON 数组，后端按字符串原样返回 */
+export function toCustomField(r: Row): CustomField {
+  let label = str(pick(r, 'label'))
+  try {
+    label = L(JSON.parse(label))
+  } catch {
+    label = L(pick(r, 'label'))
+  }
+  let options: string[] = []
+  try {
+    const raw = pick(r, 'options')
+    if (typeof raw === 'string' && raw.trim()) options = JSON.parse(raw)
+  } catch {
+    options = []
+  }
+  return {
+    id: str(pick(r, 'id', 'field_id', 'fieldId')),
+    entityType: str(pick(r, 'entity_type', 'entityType')) as CustomEntityType,
+    label,
+    fieldType: (str(pick(r, 'field_type', 'fieldType')) || 'text') as CustomFieldType,
+    options,
+    required: num(pick(r, 'required')) === 1,
+    sortOrder: num(pick(r, 'sort_order', 'sortOrder')),
+    enabled: num(pick(r, 'enabled'), 1) === 1,
+  }
+}
+
+export function toCustomFieldValue(r: Row): CustomFieldValue {
+  return {
+    entityType: str(pick(r, 'entity_type', 'entityType')) as CustomEntityType,
+    entityId: str(pick(r, 'entity_id', 'entityId')),
+    fieldId: str(pick(r, 'field_id', 'fieldId')),
+    value: L(pick(r, 'value')),
+  }
+}
+
 /* ---------------- 静态业务数据（双语，作为 listTools 失败时兜底） ---------------- */
 
 export interface Bilingual {
@@ -281,7 +341,7 @@ export interface ToolEntry {
   desc: Bilingual
 }
 
-/** 20 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
+/** 23 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
 export const TOOL_CATALOG: ToolEntry[] = [
   { name: 'hr.onboard', domain: 'hr', params: 'name, dept, position, entry_date, salary, manager', desc: { zh: '创建员工档案并启动入职流程（资料→合同→设备→培训）', en: 'Create employee record and kick off the onboarding flow' } },
   { name: 'hr.offboard', domain: 'hr', params: 'employee, last_day, reason, handover_to', desc: { zh: '发起离职流程、冻结账号、生成交接与资产回收清单', en: 'Start offboarding, freeze accounts, build handover & asset return checklist' } },
@@ -303,6 +363,9 @@ export const TOOL_CATALOG: ToolEntry[] = [
   { name: 'asset.assign', domain: 'asset', params: 'asset_id, employee, note?', desc: { zh: '将资产领用给员工并写入责任人', en: 'Assign an asset to an employee and record custody' } },
   { name: 'asset.return', domain: 'asset', params: 'asset_id, condition?', desc: { zh: '归还资产，状态回写为在库并释放责任人', en: 'Return an asset, reset to in-stock and release custody' } },
   { name: 'asset.query', domain: 'asset', params: 'category?, status?, keyword?', desc: { zh: '资产盘点：按类别 / 状态 / 领用人检索', en: 'Inventory lookup by category, status or holder' } },
+  { name: 'custom.field.define', domain: 'custom', params: 'field_id, entity_type, label, field_type, options?, required?, sort_order?', desc: { zh: '定义或更新自定义字段（仅管理员）', en: 'Define or update a custom field (admin only)' } },
+  { name: 'custom.field.list', domain: 'custom', params: 'entity_type?', desc: { zh: '查询自定义字段库（全员可读）', en: 'List custom fields (readable by all)' } },
+  { name: 'custom.field.remove', domain: 'custom', params: 'field_id', desc: { zh: '删除自定义字段及其全部字段值（仅管理员）', en: 'Delete a custom field and all its values (admin only)' } },
 ]
 
 export interface QuickItem {

@@ -313,6 +313,9 @@ async fn run_llm(
         .tool(tools::AssetAssign { state: state.clone(), user: user.clone() })
         .tool(tools::AssetReturn { state: state.clone(), user: user.clone() })
         .tool(tools::AssetQuery { state: state.clone(), user: user.clone() })
+        .tool(tools::CustomFieldDefine { state: state.clone(), user: user.clone() })
+        .tool(tools::CustomFieldList { state: state.clone(), user: user.clone() })
+        .tool(tools::CustomFieldRemove { state: state.clone(), user: user.clone() })
         .build();
 
     // 模型无法伪造身份：工具实例已绑定宿主注入的 SessionUser。

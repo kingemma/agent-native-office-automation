@@ -2,10 +2,13 @@
 /** 人事：花名册 / 组织架构 / 异动记录 + 入职·离职·晋升表单 + 详情抽屉 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { message } from 'ant-design-vue'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
 import ColumnPicker from '../components/ColumnPicker.vue'
+import CustomFieldForm from '../components/CustomFieldForm.vue'
 import { useColumns } from '../composables/useColumns'
+import { useCustomFields } from '../composables/useCustomFields'
 import { listTable } from '../api/bridge'
 import {
   EMP_STATUSES, toDepartment, toEmployee, toHrCase,
@@ -17,6 +20,7 @@ import {
 import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
+const custom = useCustomFields()
 const loading = ref(false)
 const error = ref('')
 const employees = ref<Employee[]>([])
@@ -35,6 +39,7 @@ async function load(): Promise<void> {
     employees.value = em.map(toEmployee)
     departments.value = de.map(toDepartment)
     cases.value = ca.map(toHrCase)
+    await custom.reload()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -135,7 +140,12 @@ const detailRows = computed<{ k: string; v: string }[]>(() => {
       { k: t('hr.colStatus'), v: t('st.' + e.status) }, { k: t('hr.colEntry'), v: e.entryDate },
       { k: t('hr.colSalary'), v: money(e.salary) }, { k: t('hr.colManager'), v: empName(e.managerId) },
       { k: t('hr.colEmail'), v: e.email },
-    ]
+    ].concat(
+      custom.valuesFor('employee', e.id).map((v) => ({
+        k: custom.allFields.value.find((f) => f.id === v.fieldId)?.label ?? v.fieldId,
+        v: v.value,
+      })),
+    )
   }
   const c = r as HrCase
   return [
@@ -157,11 +167,14 @@ const onboardOpen = ref(false)
 const offboardOpen = ref(false)
 const promoteOpen = ref(false)
 const onboardForm = reactive({ name: '', deptId: 'D02', position: '', entry_date: dateAdd(7), salary: 15000, managerId: '' })
+const onboardCustom = ref<Record<string, string>>({})
+const onboardCustomRef = ref<InstanceType<typeof CustomFieldForm> | null>(null)
 const offboardForm = reactive({ employeeId: '', last_day: today(), reason: '', handover_to: '' })
 const promoteForm = reactive({ employeeId: '', new_salary: 26000, new_position: '', effective_date: today(), reason: '' })
 
 function openOnboard(): void {
   Object.assign(onboardForm, { name: '', deptId: departments.value[0]?.id || 'D01', position: '', entry_date: dateAdd(7), salary: 15000, managerId: '' })
+  onboardCustom.value = custom.emptyValues('employee')
   onboardOpen.value = true
 }
 function openOffboard(): void {
@@ -174,6 +187,10 @@ function openPromote(): void {
 }
 
 async function submitOnboard(): Promise<void> {
+  if (onboardCustomRef.value && !onboardCustomRef.value.validate()) {
+    message.warning(t('custom.requiredMissing'))
+    return
+  }
   submitting.value = true
   try {
     const args = {
@@ -185,6 +202,7 @@ async function submitOnboard(): Promise<void> {
         managerId: onboardForm.managerId || deptLeader(onboardForm.deptId),
       }),
       ...centsArgs('salary', onboardForm.salary),
+      custom_fields: custom.submissionValues('employee', onboardCustom.value),
     }
     const res = await submitTool('hr.onboard', args)
     if (res.ok) onboardOpen.value = false
@@ -370,6 +388,12 @@ async function submitApprove(): Promise<void> {
           <a-form-item :label="t('field.salary')"><a-input-number v-model:value="onboardForm.salary" :min="0" :step="1000" style="width: 100%" /></a-form-item>
           <a-form-item :label="t('field.manager')"><a-select v-model:value="onboardForm.managerId" :options="empOptions" allow-clear /></a-form-item>
         </div>
+        <CustomFieldForm
+          ref="onboardCustomRef"
+          entity-type="employee"
+          :values="onboardCustom"
+          @update:values="onboardCustom = $event"
+        />
       </a-form>
     </a-modal>
 

@@ -21,26 +21,29 @@ use serde_json::{json, Map, Value};
 
 /// (tool name, domain, description, [(参数名, JSON Schema 类型)])
 pub const TOOL_SPECS: &[(&str, &str, &str, &[(&str, &str)])] = &[
-    ("hr.onboard", "hr", "创建员工档案并启动入职流程（资料→合同→设备→培训）", &[("name", "string"), ("dept_id", "string"), ("position", "string"), ("entry_date", "string"), ("salary_cents", "integer")]),
+    ("hr.onboard", "hr", "创建员工档案并启动入职流程（资料→合同→设备→培训）", &[("name", "string"), ("dept_id", "string"), ("position", "string"), ("entry_date", "string"), ("salary_cents", "integer"), ("custom_fields", "object")]),
     ("hr.offboard", "hr", "发起离职流程、冻结账号、自动回收名下资产、生成交接清单", &[("employee_id", "string"), ("last_day", "string"), ("reason", "string"), ("handover_to", "string")]),
     ("hr.promote", "hr", "晋升/涨薪，写入异动记录并按涨幅分派审批链", &[("employee_id", "string"), ("new_salary_cents", "integer"), ("new_position", "string"), ("effective_date", "string"), ("reason", "string")]),
     ("hr.approve", "hr", "人事异动单（入职/离职/晋升）逐级审批：通过转交下一级，末级通过才生效，驳回终止", &[("case_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("hr.roster.query", "hr", "按部门、状态、关键词检索员工花名册（排除已离职）", &[("dept_id", "string"), ("status", "string"), ("keyword", "string")]),
     ("org.chart", "org", "返回组织架构树与各节点实时在编人数", &[]),
-    ("finance.claim.create", "finance", "创建日常/商务/项目实施报销单，可带费用明细（发票/发生日期），预算占用校验并生成审批链", &[("type", "string"), ("applicant_id", "string"), ("amount_cents", "integer"), ("purpose", "string"), ("project", "string"), ("items", "array")]),
+    ("finance.claim.create", "finance", "创建日常/商务/项目实施报销单，可带费用明细（发票/发生日期），预算占用校验并生成审批链", &[("type", "string"), ("applicant_id", "string"), ("amount_cents", "integer"), ("purpose", "string"), ("project", "string"), ("items", "array"), ("custom_fields", "object")]),
     ("finance.claim.approve", "finance", "审批通过/驳回（状态机校验），通过后进入付款队列、驳回释放预算", &[("claim_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("finance.summary", "finance", "按类型/部门/月份汇总报销金额与预算执行率", &[("month", "string"), ("dept_id", "string"), ("group_by", "string")]),
-    ("contract.create", "contract", "创建合同台账并发起法务/用印审批", &[("name", "string"), ("party", "string"), ("type", "string"), ("amount_cents", "integer"), ("sign_date", "string"), ("expire_date", "string")]),
+    ("contract.create", "contract", "创建合同台账并发起法务/用印审批", &[("name", "string"), ("party", "string"), ("type", "string"), ("amount_cents", "integer"), ("sign_date", "string"), ("expire_date", "string"), ("custom_fields", "object")]),
     ("contract.approve", "contract", "合同法务/用印审批：逐级通过或驳回，末级通过后合同生效", &[("contract_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("contract.query", "contract", "检索合同并输出 N 天内到期预警清单", &[("keyword", "string"), ("status", "string"), ("expiring_in_days", "integer")]),
     ("attendance.checkin", "attendance", "写入上班/下班打卡，判定迟到早退并计算工时", &[("employee_id", "string"), ("type", "string"), ("time", "string"), ("source", "string")]),
     ("attendance.makeup", "attendance", "提交补卡申请（同人同日仅一条待审批），进入主管审批", &[("employee_id", "string"), ("date", "string"), ("reason", "string"), ("clock_in", "string"), ("clock_out", "string")]),
     ("attendance.approve", "attendance", "补卡审批：通过后才补入考勤，驳回不写考勤", &[("request_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("attendance.report", "attendance", "生成月度考勤汇总：出勤率、迟到、缺卡、外勤、请假", &[("month", "string"), ("dept_id", "string")]),
-    ("asset.register", "asset", "登记新资产（SN 唯一校验）并生成资产编号与二维码", &[("category", "string"), ("model", "string"), ("serial_no", "string"), ("price_cents", "integer"), ("location", "string")]),
+    ("asset.register", "asset", "登记新资产（SN 唯一校验）并生成资产编号与二维码", &[("category", "string"), ("model", "string"), ("serial_no", "string"), ("price_cents", "integer"), ("location", "string"), ("custom_fields", "object")]),
     ("asset.assign", "asset", "将资产领用给员工；目标被占用时自动改派同类在库资产", &[("asset_id", "string"), ("employee_id", "string")]),
     ("asset.return", "asset", "归还资产，状态回写为在库并释放责任人，写入资产履历", &[("asset_id", "string"), ("condition", "string")]),
     ("asset.query", "asset", "资产盘点：按类别/状态/领用人检索并汇总原值", &[("category", "string"), ("status", "string"), ("keyword", "string"), ("holder_id", "string")]),
+    ("custom.field.define", "custom", "定义或更新自定义字段（仅管理员）：名称/类型/适用模块/下拉选项", &[("field_id", "string"), ("entity_type", "string"), ("label", "string"), ("field_type", "string"), ("options", "string"), ("required", "boolean"), ("sort_order", "integer")]),
+    ("custom.field.list", "custom", "查询自定义字段库，可按模块筛选（全员可读）", &[("entity_type", "string")]),
+    ("custom.field.remove", "custom", "删除自定义字段及其全部字段值（仅管理员）", &[("field_id", "string")]),
 ];
 
 pub fn spec_desc(name: &str) -> String {
@@ -65,6 +68,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "group_by", "expiring_in_days", "expire_date", "sign_date", "effective_date",
     "entry_date", "new_position", "handover_to", "condition", "location", "serial_no",
     "holder_id", "last_day", "reason", "manager_id", "owner_id", "items",
+    "custom_fields", "options", "required", "sort_order", "field_type", "label", "field_id",
+    "entity_type",
 ];
 
 /// 金额参数说明：明确单位是「分」，引导模型把「月薪 18000 元」换算成 1800000 分，
@@ -75,6 +80,9 @@ const PARAM_DESCRIPTIONS: &[(&str, &str)] = &[
     ("amount_cents", "金额（单位：分，1 元 = 100 分）"),
     ("price_cents", "采购价（单位：分，1 元 = 100 分）"),
     ("items", "费用明细数组，每项含 category 与 amount_cents（分）"),
+    ("custom_fields", "自定义字段：对象，键为字段库中的 field_id，值为字段内容（下拉项传选项值）"),
+    ("label", "字段显示名：JSON 字符串，形如 {\"zh\":\"紧急联系人\",\"en\":\"Emergency Contact\"}"),
+    ("options", "下拉选项：JSON 字符串数组，形如 [\"选项A\",\"选项B\"]，仅 select 类型需要"),
 ];
 
 fn param_desc(key: &str) -> &str {
@@ -197,6 +205,9 @@ oa_tool!(AssetRegister, "asset.register");
 oa_tool!(AssetAssign, "asset.assign");
 oa_tool!(AssetReturn, "asset.return");
 oa_tool!(AssetQuery, "asset.query");
+oa_tool!(CustomFieldDefine, "custom.field.define");
+oa_tool!(CustomFieldList, "custom.field.list");
+oa_tool!(CustomFieldRemove, "custom.field.remove");
 
 /* ---------------- 参数归一化 ---------------- */
 
@@ -573,6 +584,38 @@ impl std::fmt::Display for ToolOutcome {
 
 impl std::error::Error for ToolOutcome {}
 
+/// 把创建单据时携带的自定义字段写入 EAV 值表；与业务写入共用同一事务。
+/// 只接受字段库中已启用、且 entity_type 匹配的字段，避免伪造 field_id 写入垃圾值。
+async fn write_custom_fields(db: &mut dyn Repo, entity_type: &str, entity_id: &str, a: &Value) -> Result<usize> {
+    let Some(cf) = a.get("custom_fields").and_then(Value::as_object) else {
+        return Ok(0);
+    };
+    let mut written = 0;
+    for (field_id, val) in cf {
+        let text = match val {
+            Value::String(x) => x.clone(),
+            Value::Number(x) => x.to_string(),
+            Value::Bool(x) => x.to_string(),
+            _ => continue,
+        };
+        let enabled = db.query_json(
+            "SELECT 1 FROM custom_fields WHERE id=?1 AND entity_type=?2 AND enabled=1",
+            params![field_id, entity_type],
+        ).await?;
+        if enabled.is_empty() {
+            continue;
+        }
+        db.execute(
+            "INSERT INTO custom_field_values(entity_type,entity_id,field_id,value)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(entity_type,entity_id,field_id) DO UPDATE SET value=excluded.value",
+            params![entity_type, entity_id, field_id, text],
+        ).await?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /* ---------------- 统一调用入口 ---------------- */
 
 /// 所有通道（Rig Agent / 本地意图引擎 / REST / Tauri / 测试）共用的唯一写入口。
@@ -733,13 +776,14 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  VALUES(?1,'onboard',?2,?3,?4,'running',1,?5)",
                 params![case_id, id, entry, s(a, &["reason"]), steps],
             ).await?;
+            let custom_count = write_custom_fields(db, "employee", &id, a).await?;
             let onboard_chain = hr_chain(db, &id, &dept, "onboard").await?;
             add_flow(db, "hr_case", &case_id, &onboard_chain).await?;
             let first = onboard_chain.first().cloned().unwrap_or_else(|| "E12".to_string());
             notify(db, &first, "入职流程待办", &format!("{person} 的合同签署与设备领用待确认"), "hr").await?;
             Ok(json!({
                 "ok": true, "employee_id": id, "employee_no": no, "case_id": case_id,
-                "salary_cents": salary, "steps": steps,
+                "salary_cents": salary, "steps": steps, "custom_fields_count": custom_count,
                 "message": format!("已创建员工 {person}（{no}），入职流程 {case_id} 已启动")
             }))
         }
@@ -1033,6 +1077,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 )
                 .await?;
             }
+            let custom_count = write_custom_fields(db, "claim", &id, a).await?;
             add_flow(db, "claim", &id, &approvers).await?;
             notify(db, &first, "报销待审批", &format!("{id} 金额 {:.2} 元，待你审批", amount as f64 / 100.0), "approval").await?;
             // 超标明细单独回给前端/审批人，便于在详情里高亮；超标但已备注的照常入库
@@ -1050,6 +1095,7 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 "current_step": 1, "total_steps": labels.len(),
                 "items_count": items.len(), "items": items, "items_amount_mismatch": amount_mismatch,
                 "over_standard_count": over_items.len(), "over_standard_items": over_items,
+                "custom_fields_count": custom_count,
                 "message": format!("报销单 {id} 已创建（{:.2} 元{}），预算校验{}，审批链：{}（共 {} 级，当前由 {first} 审批）",
                     amount as f64 / 100.0,
                     if items.is_empty() { String::new() } else { format!("，{} 条明细", items.len()) },
@@ -1235,11 +1281,13 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  VALUES(?1,?2,?3,?4,?5,?6,?7,'review',?8)",
                 params![id, name, party, kind, amount, sign, expire, owner],
             ).await?;
+            let custom_count = write_custom_fields(db, "contract", &id, a).await?;
             add_flow(db, "contract", &id, &approvers).await?;
             let first = approvers.first().cloned().unwrap_or_else(|| "E01".to_string());
             notify(db, &first, "合同待审批", &format!("{id}「{name}」等待法务/用印审批"), "contract").await?;
             Ok(json!({
                 "ok": true, "contract_id": id, "amount_cents": amount, "owner_id": owner,
+                "custom_fields_count": custom_count,
                 "approvers": approvers, "current_approver": first, "total_steps": approvers.len(),
                 "message": format!("合同 {id}「{name}」已创建，进入法务/用印审批（{} 级，当前 {first}）",
                     approvers.len())
@@ -1694,10 +1742,11 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                  VALUES(?1,?2,?3,?4,'instock',NULL,?5,?6,?7,?8)",
                 params![id, category, model, sn, location, price, qr, today()],
             ).await?;
+            let custom_count = write_custom_fields(db, "asset", &id, a).await?;
             add_event(db, &id, "register", None, "采购入库").await?;
             Ok(json!({
                 "ok": true, "asset_id": id, "qr_code": qr, "qr_content": id, "serial_no": sn,
-                "price_cents": price,
+                "price_cents": price, "custom_fields_count": custom_count,
                 "message": format!("资产 {id} 已入库：{model}（SN {sn}），二维码已生成")
             }))
         }
@@ -1792,6 +1841,67 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             }))
         }
 
+        "custom.field.define" => {
+            let field_id = need(a, &["field_id", "fieldId"], "field_id")?;
+            if !field_id.starts_with("cf_") {
+                bail!("field_id 必须以 cf_ 开头，例如 cf_emergency_contact");
+            }
+            let entity_type = need(a, &["entity_type", "entityType"], "entity_type")?;
+            if !matches!(entity_type.as_str(), "employee" | "claim" | "contract" | "asset") {
+                bail!("entity_type 必须是 employee/claim/contract/asset 之一");
+            }
+            let label = need(a, &["label"], "label")?;
+            let field_type = o(a, &["field_type", "fieldType"]).unwrap_or_else(|| "text".into());
+            if !matches!(field_type.as_str(), "text" | "number" | "date" | "select") {
+                bail!("field_type 必须是 text/number/date/select 之一");
+            }
+            let options = o(a, &["options"]).unwrap_or_default();
+            if field_type == "select" && options.is_empty() {
+                bail!("select 类型必须提供 options 选项");
+            }
+            let required = kb(a, "required");
+            let sort_order = n(a, &["sort_order", "sortOrder"]);
+            db.execute(
+                "INSERT INTO custom_fields(id,entity_type,label,field_type,options,required,sort_order,enabled)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,1)
+                 ON CONFLICT(id) DO UPDATE SET entity_type=excluded.entity_type, label=excluded.label,
+                   field_type=excluded.field_type, options=excluded.options, required=excluded.required,
+                   sort_order=excluded.sort_order, enabled=1",
+                params![field_id, entity_type, label, field_type, options, required as i64, sort_order],
+            ).await?;
+            Ok(json!({
+                "ok": true, "field_id": field_id, "entity_type": entity_type,
+                "message": format!("自定义字段 {field_id} 已保存到字段库")
+            }))
+        }
+
+        "custom.field.list" => {
+            let entity_type = o(a, &["entity_type", "entityType"]);
+            let rows = db.query_json(
+                "SELECT * FROM custom_fields
+                 WHERE (?1 IS NULL OR entity_type=?1) AND enabled=1
+                 ORDER BY entity_type, sort_order, id",
+                params![entity_type],
+            ).await?;
+            Ok(json!({
+                "ok": true, "count": rows.len(), "fields": rows,
+                "message": format!("字段库命中 {} 个自定义字段", rows.len())
+            }))
+        }
+
+        "custom.field.remove" => {
+            let field_id = need(a, &["field_id", "fieldId"], "field_id")?;
+            let n_fields = db.execute("DELETE FROM custom_fields WHERE id=?1", params![field_id]).await?;
+            if n_fields == 0 {
+                bail!("字段 {field_id} 不存在");
+            }
+            let n_values = db.execute("DELETE FROM custom_field_values WHERE field_id=?1", params![field_id]).await?;
+            Ok(json!({
+                "ok": true, "field_id": field_id, "values_removed": n_values,
+                "message": format!("字段 {field_id} 及 {n_values} 条字段值已删除")
+            }))
+        }
+
         _ => bail!("unknown tool: {name}"),
     }
 }
@@ -1824,12 +1934,59 @@ mod tests {
 
     #[test]
     fn specs_cover_every_registered_tool() {
-        assert_eq!(TOOL_SPECS.len(), 20);
+        assert_eq!(TOOL_SPECS.len(), 23);
         for (name, _, _, _) in TOOL_SPECS {
             assert!(domain::TOOL_NAMES.contains(name), "{name} missing from TOOL_NAMES");
             let schema = tool_schema(name);
             assert_eq!(schema["type"], "object");
         }
+    }
+
+    #[tokio::test]
+    async fn custom_fields_flow_define_write_and_remove() {
+        let app = AppState::new(Store::open_in_memory().await.unwrap());
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        // 只接受 cf_ 前缀与四类合法 entity_type
+        let bad = call(app.clone(), &admin, "custom.field.define",
+            json!({ "field_id": "bad_id", "entity_type": "employee", "label": "{}", "field_type": "text" })).await;
+        assert_eq!(bad["ok"], false);
+
+        let defined = call(app.clone(), &admin, "custom.field.define", json!({
+            "field_id": "cf_emergency_contact", "entity_type": "employee",
+            "label": "{\"zh\":\"紧急联系人\",\"en\":\"Emergency Contact\"}",
+            "field_type": "text", "required": true, "sort_order": 1
+        })).await;
+        assert_eq!(defined["ok"], true);
+
+        let listed = call(app.clone(), &admin, "custom.field.list", json!({ "entity_type": "employee" })).await;
+        assert_eq!(listed["count"], 1);
+        assert_eq!(listed["fields"][0]["id"], "cf_emergency_contact");
+
+        // 入职带自定义字段；未定义/未启用的字段被忽略
+        let onboard = call(app.clone(), &admin, "hr.onboard", json!({
+            "name": "自定义字段测试", "position": "工程师", "salary_cents": 1_800_000,
+            "custom_fields": {
+                "cf_emergency_contact": "张三 13800000000",
+                "cf_not_defined": "应被忽略"
+            }
+        })).await;
+        assert_eq!(onboard["ok"], true, "onboard failed: {onboard}");
+        assert_eq!(onboard["custom_fields_count"], 1);
+        let emp = onboard["employee_id"].as_str().unwrap();
+        let vals = app.store.query_json(
+            "SELECT * FROM custom_field_values WHERE entity_type='employee' AND entity_id=?1",
+            crate::params![emp],
+        ).await.unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0]["value"], "张三 13800000000");
+
+        // 删除字段级联清值
+        let removed = call(app.clone(), &admin, "custom.field.remove", json!({ "field_id": "cf_emergency_contact" })).await;
+        assert_eq!(removed["ok"], true);
+        assert_eq!(removed["values_removed"], 1);
+        let left = app.store.scalar_i64("SELECT COUNT(*) FROM custom_field_values", &[]).await.unwrap();
+        assert_eq!(left, 0);
     }
 
     #[tokio::test]

@@ -2,16 +2,20 @@
 /** 资产：台账 / 登记·领用·归还 / 类别分布 / 盘点原值合计 / 详情 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { message } from 'ant-design-vue'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
 import ColumnPicker from '../components/ColumnPicker.vue'
+import CustomFieldForm from '../components/CustomFieldForm.vue'
 import { useColumns } from '../composables/useColumns'
+import { useCustomFields } from '../composables/useCustomFields'
 import { listTable } from '../api/bridge'
 import { ASSET_CATEGORIES, toAsset, toEmployee, type Asset, type Employee } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
 import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
+const custom = useCustomFields()
 const loading = ref(false)
 const error = ref('')
 const assets = ref<Asset[]>([])
@@ -24,6 +28,7 @@ async function load(): Promise<void> {
     const [as, em] = await Promise.all([listTable('assets'), listTable('employees')])
     assets.value = as.map(toAsset)
     employees.value = em.map(toEmployee)
+    await custom.reload()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -107,7 +112,12 @@ const detailRows = computed<{ k: string; v: string }[]>(() => {
     { k: t('asset.colStatus'), v: t('st.' + a.status) }, { k: t('asset.colHolder'), v: a.holderId ? holderName(a.holderId) : '—' },
     { k: t('asset.colLocation'), v: a.location }, { k: t('asset.colPrice'), v: money(a.price) },
     { k: t('asset.colDate'), v: a.purchaseDate },
-  ]
+  ].concat(
+    custom.valuesFor('asset', a.id).map((v) => ({
+      k: custom.allFields.value.find((f) => f.id === v.fieldId)?.label ?? v.fieldId,
+      v: v.value,
+    })),
+  )
 })
 function openDetail(row: Asset): void {
   detailRow.value = row
@@ -140,10 +150,13 @@ const assignOpen = ref(false)
 const returnOpen = ref(false)
 const submitting = ref(false)
 const regForm = reactive({ category: 'laptop', model: '', sn: '', price: 5000, location: '' })
+const regCustom = ref<Record<string, string>>({})
+const regCustomRef = ref<InstanceType<typeof CustomFieldForm> | null>(null)
 const assignForm = reactive({ asset_id: '', employeeId: '' })
 const returnForm = reactive({ asset_id: '' })
 function openReg(): void {
   Object.assign(regForm, { category: 'laptop', model: '', sn: '', price: 5000, location: '' })
+  regCustom.value = custom.emptyValues('asset')
   regOpen.value = true
 }
 function openAssign(): void {
@@ -155,6 +168,10 @@ function openReturn(): void {
   returnOpen.value = true
 }
 async function submitReg(): Promise<void> {
+  if (regCustomRef.value && !regCustomRef.value.validate()) {
+    message.warning(t('custom.requiredMissing'))
+    return
+  }
   submitting.value = true
   try {
     const args = {
@@ -163,6 +180,7 @@ async function submitReg(): Promise<void> {
       sn: regForm.sn.trim(),
       location: regForm.location.trim() || '—',
       ...centsArgs('price', regForm.price),
+      custom_fields: custom.submissionValues('asset', regCustom.value),
     }
     const res = await submitTool('asset.register', args)
     if (res.ok) regOpen.value = false
@@ -287,6 +305,12 @@ async function submitReturn(): Promise<void> {
           <a-form-item :label="t('field.price')"><a-input-number v-model:value="regForm.price" :min="0" :step="500" style="width: 100%" /></a-form-item>
           <a-form-item :label="t('field.location')"><a-input v-model:value="regForm.location" /></a-form-item>
         </div>
+        <CustomFieldForm
+          ref="regCustomRef"
+          entity-type="asset"
+          :values="regCustom"
+          @update:values="regCustom = $event"
+        />
       </a-form>
     </a-modal>
 

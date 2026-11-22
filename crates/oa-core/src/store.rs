@@ -127,6 +127,18 @@ CREATE TABLE IF NOT EXISTS counters (
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
+-- 自定义字段库：全局定义，按业务实体归类；label 存 {"zh","en"} JSON，options 存下拉项 JSON 数组
+CREATE TABLE IF NOT EXISTS custom_fields (
+  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, label TEXT NOT NULL,
+  field_type TEXT NOT NULL, options TEXT,
+  required INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- 自定义字段值：EAV 模式，避免给每张业务表加列；一条记录一个字段一行
+CREATE TABLE IF NOT EXISTS custom_field_values (
+  entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, field_id TEXT NOT NULL,
+  value TEXT, PRIMARY KEY(entity_type, entity_id, field_id)
+);
 CREATE INDEX IF NOT EXISTS idx_emp_dept ON employees(dept_id);
 CREATE INDEX IF NOT EXISTS idx_emp_status ON employees(status);
 CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
@@ -247,6 +259,19 @@ CREATE TABLE IF NOT EXISTS counters (
 -- 运行时配置（目前是 LLM 提供商），与业务数据分开存放，重置演示数据时保留
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
+-- 自定义字段库：全局定义，按业务实体归类；label 存 {"zh","en"} JSON，options 存下拉项 JSON 数组
+CREATE TABLE IF NOT EXISTS custom_fields (
+  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, label TEXT NOT NULL,
+  field_type TEXT NOT NULL, options TEXT,
+  required BIGINT NOT NULL DEFAULT 0, sort_order BIGINT NOT NULL DEFAULT 0,
+  enabled BIGINT NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
+);
+-- 自定义字段值：EAV 模式，避免给每张业务表加列；一条记录一个字段一行
+CREATE TABLE IF NOT EXISTS custom_field_values (
+  entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, field_id TEXT NOT NULL,
+  value TEXT, PRIMARY KEY(entity_type, entity_id, field_id)
 );
 CREATE INDEX IF NOT EXISTS idx_emp_dept ON employees(dept_id);
 CREATE INDEX IF NOT EXISTS idx_emp_status ON employees(status);
@@ -928,6 +953,31 @@ impl Store {
                 self.query_all("SELECT * FROM audit_events ORDER BY id DESC LIMIT 500").await
             }
             "audit_events" => Ok(vec![]),
+            // 字段定义全员可读（创建表单要渲染），未启用的也返回以便管理员在设置页恢复
+            "custom_fields" => {
+                self.query_all("SELECT * FROM custom_fields ORDER BY entity_type, sort_order, id LIMIT 500")
+                    .await
+            }
+            // 字段值跟随各业务表的数据范围：管理员/对应业务角色看全部，其余只看本人相关记录
+            "custom_field_values" if privileged => {
+                self.query_all("SELECT * FROM custom_field_values ORDER BY entity_type, entity_id, field_id LIMIT 500")
+                    .await
+            }
+            "custom_field_values" => {
+                self.query_json(
+                    "SELECT v.* FROM custom_field_values v
+                     WHERE (v.entity_type='employee' AND v.entity_id=?1)
+                        OR (v.entity_type='claim'
+                            AND v.entity_id IN (SELECT id FROM claims WHERE applicant_id=?1))
+                        OR (v.entity_type='contract'
+                            AND v.entity_id IN (SELECT id FROM contracts WHERE owner_id=?1))
+                        -- 资产台账全员可见，其字段值同样放开
+                        OR v.entity_type='asset'
+                     ORDER BY v.entity_type, v.entity_id, v.field_id LIMIT 500",
+                    params![user.employee_id],
+                )
+                .await
+            }
             _ => Err(anyhow!("unknown table: {name}")),
         }
     }

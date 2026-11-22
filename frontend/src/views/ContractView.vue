@@ -2,11 +2,14 @@
 /** 合同：台账 / 状态·关键词筛选 / 到期预警 / 新建（敏感确认）/ 详情抽屉 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { message } from 'ant-design-vue'
 import Icon from '../components/Icon.vue'
 import AsyncPanel from '../components/AsyncPanel.vue'
 import ColumnPicker from '../components/ColumnPicker.vue'
+import CustomFieldForm from '../components/CustomFieldForm.vue'
 import AttachmentUploader from '../components/AttachmentUploader.vue'
 import { useColumns } from '../composables/useColumns'
+import { useCustomFields } from '../composables/useCustomFields'
 import { listTable } from '../api/bridge'
 import {
   CONTRACT_TYPES, toContract, toEmployee, toFlow,
@@ -16,6 +19,7 @@ import { aliased, centsArgs, dateAdd, money, tagColor, today, wan } from '../uti
 import { auth, can, dataVersion, submitTool } from '../store'
 
 const { t } = useI18n()
+const custom = useCustomFields()
 const loading = ref(false)
 const error = ref('')
 const contracts = ref<Contract[]>([])
@@ -34,6 +38,7 @@ async function load(): Promise<void> {
     contracts.value = co.map(toContract)
     employees.value = em.map(toEmployee)
     flows.value = fl.map(toFlow)
+    await custom.reload()
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -150,7 +155,12 @@ const detailRows = computed<{ k: string; v: string }[]>(() => {
     { k: t('contract.colAmount'), v: money(c.amount) }, { k: t('contract.colSign'), v: c.signDate },
     { k: t('contract.colExpire'), v: c.expireDate }, { k: t('contract.colStatus'), v: t('st.' + c.status) },
     { k: t('contract.colOwner'), v: ownerName(c.ownerId) },
-  ]
+  ].concat(
+    custom.valuesFor('contract', c.id).map((v) => ({
+      k: custom.allFields.value.find((f) => f.id === v.fieldId)?.label ?? v.fieldId,
+      v: v.value,
+    })),
+  )
 })
 function openDetail(row: Contract): void {
   detailRow.value = row
@@ -162,11 +172,18 @@ const detailFlows = computed<ApprovalFlow[]>(() => (detailRow.value ? flowsOf(de
 const formOpen = ref(false)
 const submitting = ref(false)
 const form = reactive({ name: '', party: '', type: 'service', amount: 100000, sign_date: today(), expire_date: dateAdd(365) })
+const contractCustom = ref<Record<string, string>>({})
+const contractCustomRef = ref<InstanceType<typeof CustomFieldForm> | null>(null)
 function openForm(): void {
   Object.assign(form, { name: '', party: '', type: 'service', amount: 100000, sign_date: today(), expire_date: dateAdd(365) })
+  contractCustom.value = custom.emptyValues('contract')
   formOpen.value = true
 }
 async function submitForm(): Promise<void> {
+  if (contractCustomRef.value && !contractCustomRef.value.validate()) {
+    message.warning(t('custom.requiredMissing'))
+    return
+  }
   submitting.value = true
   try {
     const args = {
@@ -180,6 +197,7 @@ async function submitForm(): Promise<void> {
         ownerId: auth.user?.employee_id || '',
       }),
       ...centsArgs('amount', form.amount),
+      custom_fields: custom.submissionValues('contract', contractCustom.value),
     }
     const res = await submitTool('contract.create', args)
     if (res.ok) formOpen.value = false
@@ -306,6 +324,12 @@ async function submitForm(): Promise<void> {
           <a-form-item :label="t('field.signDate')"><a-date-picker v-model:value="form.sign_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
           <a-form-item :label="t('field.expireDate')"><a-date-picker v-model:value="form.expire_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
         </div>
+        <CustomFieldForm
+          ref="contractCustomRef"
+          entity-type="contract"
+          :values="contractCustom"
+          @update:values="contractCustom = $event"
+        />
       </a-form>
     </a-modal>
   </div>
