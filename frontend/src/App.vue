@@ -222,7 +222,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </template>
         </nav>
-        <div class="oa-sider-foot">v0.9.0 · Rig 0.46 · Tauri 2.0</div>
+        <div class="oa-sider-foot">v0.9.0</div>
       </aside>
 
       <div class="oa-main">

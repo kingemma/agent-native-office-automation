@@ -442,7 +442,7 @@ export const STACK_CARDS = [
   { key: 'rust', ico: 'cpu', color: 'orange', title: 'Rust 1.97+' },
   { key: 'rig', ico: 'bot', color: 'purple', title: 'Rig 0.46' },
   { key: 'tauri', ico: 'layers', color: 'blue', title: 'Tauri 2.0' },
-  { key: 'db', ico: 'database', color: 'green', title: 'SQLite / PostgreSQL' },
+  { key: 'db', ico: 'database', color: 'green', title: 'PostgreSQL' },
   { key: 'llm', ico: 'sparkle', color: 'cyan', title: 'Pluggable LLM' },
 ]
 
@@ -450,7 +450,7 @@ export const STACK_CARDS = [
 export const ARCH_LAYERS = [
   { k: 'l1', ico: 'grid', pills: ['Vue SFC', 'Pinia', 'Design Token', 'vue-i18n'] },
   { k: 'l2', ico: 'flow', pills: ['REST · Axum', 'bridge.ts', 'Bearer 会话', 'CORS'] },
-  { k: 'l3', ico: 'bot', pills: ['Rig AgentBuilder', 'Tool trait', 'AgentHook', 'ToolContext'] },
+  { k: 'l3', ico: 'bot', pills: ['Rig AgentBuilder', 'Tool trait', '确认门禁', 'ToolContext'] },
   { k: 'l4', ico: 'database', pills: ['Approval FSM', 'Audit Event', 'sqlx', 'Migration'] },
 ]
 

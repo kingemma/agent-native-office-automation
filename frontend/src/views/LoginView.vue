@@ -181,7 +181,7 @@ async function submit(): Promise<void> {
           </div>
         </div>
       </div>
-      <div class="login-foot">v0.9.0 · Rig 0.46 · Tauri 2.0 · Axum</div>
+      <div class="login-foot">v0.9.0</div>
     </div>
   </div>
 </template>

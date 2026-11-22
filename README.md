@@ -1,10 +1,10 @@
 # 驭工 OA · Agent-Native Office Automation
 
 用自然语言驱动全部办公流程的 OA 系统：人事、财务、合同、考勤、资产五大业务域共用
-20 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（SQLite / Postgres）并写审计。
+23 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（Postgres）并写审计。
 
 - **前端**：Vue 3 + TypeScript + Ant Design Vue 4 + vue-i18n + Pinia
-- **后端**：Rust 1.97+ · Axum 0.8 · Rig 0.46（LLM 编排）· sqlx 0.8（SQLite / Postgres 双后端）
+- **后端**：Rust 1.97+ · Axum 0.8 · Rig 0.46（LLM 编排）· sqlx 0.8（Postgres）
 - **外壳**：Tauri 2.0，桌面（Windows / macOS / Linux）与移动端（Android / iOS）共用一套代码
 - **客户端形态**：所有平台统一走 REST（无本地数据库、无 invoke 业务通道）；
   登录页配置「局域网 / 外网」两套地址，登录时探测局域网，不可达自动切外网
@@ -23,14 +23,14 @@
 |---|---|
 | ![人事管理](docs/screenshots/hr.png) | ![财务管理](docs/screenshots/finance.png) |
 
-**系统架构**：技术选型、分层架构与 20 个工具的协议一览。
+**系统架构**：技术选型、分层架构与 23 个工具的协议一览。
 
 ![系统架构](docs/screenshots/architecture.png)
 
 ## 目录结构
 
 ```
-crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 20 个 Tool · 意图引擎
+crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 23 个 Tool · 意图引擎
 crates/oa-server      Axum REST 服务（认证、Agent、工具、台账、指标、审计、重置）
 src-tauri             Tauri 2.0 薄客户端外壳（窗口/系统集成，业务全部走 REST）
 frontend              生产前端（Vue 3 SFC + Vite），唯一前端事实来源
@@ -53,11 +53,11 @@ Visual Studio；末尾参数原样透传给底层 CLI（`tauri` / `cargo`）。
 | 桌面开发（热更新） | `.\tools\tauri.ps1 dev` | 起 Vite `:5173` → 编译外壳 → 打开窗口，业务请求直连 oa-server |
 | 只出桌面可执行文件 | `.\tools\tauri.ps1 build --no-bundle` | `target\release\oa-app.exe`（客户端，需配合服务端使用） |
 | 打完整安装包 | `.\tools\tauri.ps1 build` | 额外产出 MSI / NSIS 安装包（首次需联网下载 WiX、NSIS） |
-| 服务端（所有客户端共用） | `cargo run -p oa-server` | REST 服务 `http://0.0.0.0:8787`（局域网可访问） |
+| 服务端（所有客户端共用） | `docker compose up -d postgres` 后 `cargo run -p oa-server` | REST 服务 `http://0.0.0.0:8787`（局域网可访问） |
 | 浏览器前端 | `npm --prefix frontend run dev` | Vite `http://localhost:5173`，直连 8787（服务端已开 CORS） |
 | 后端构建 | `cargo build -p oa-server` | `target\debug\oa-server.exe` |
 | 类型检查 | `.\tools\check.ps1 --workspace --all-targets` | 只做 `cargo check`，不出产物 |
-| 全量校验 | `.\tools\smoke.ps1 -Build` | 重新编译服务端 + 25 项 REST 冒烟（临时库，用完即删） |
+| 全量校验 | `.\tools\smoke.ps1 -Build` | 重新编译服务端 + 25 项 REST 冒烟（一次性 Postgres 容器，用完即删；需 Docker） |
 | 环境自检 | `.\tools\tauri.ps1 info` | Tauri / Node / Rust 工具链版本与当前配置 |
 
 - 桌面产物按 Tauri 约定：可执行文件在 `target\release\`，安装包在 `target\release\bundle\`。
@@ -85,7 +85,7 @@ Rust 侧统一使用 **GNU 工具链**（`stable-x86_64-pc-windows-gnu`）：
 
 - 仓库自带 MinGW-w64，位于 `tools/mingw-bin`；脚本会把它和 rustc 的
   `self-contained` 工具目录一起注入 `PATH`，因此无需安装 Visual Studio C++ 工作负载。
-- 唯一的 C 依赖是 `libsqlite3-sys`（bundled，编译 `sqlite3.c`），由上面的 MinGW GCC 承担；
+- 数据库走纯 Rust 的 sqlx Postgres 驱动，不再需要编译 `libsqlite3-sys`；
   TLS 走系统实现（Windows Schannel / macOS Security.framework），不引入 OpenSSL。
 - `.cargo/config.toml` 只为 gnu 目标追加 `-Wl,--exclude-all-symbols`：
   链接 Tauri 的 cdylib 时符号数超过 MinGW ld 的 65535 导出上限，会报
@@ -175,7 +175,7 @@ pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当�
 
 | 用户名 | 员工 | 角色 | 典型权限 |
 |---|---|---|---|
-| `evan` | E01 周明远 | admin | 全部 20 个工具 |
+| `evan` | E01 周明远 | admin | 全部 23 个工具 |
 | `wuhao` | E10 吴昊 | finance | 报销审批/汇总、合同创建、考勤报表 |
 | `fengxue` | E12 冯雪 | hr | 入职/离职/晋升、资产登记/领用、考勤报表 |
 | `chenli` | E02 陈立 | manager | 报销审批、领用/归还、合同创建、团队数据 |
@@ -186,7 +186,7 @@ RBAC 在服务端执行（`crates/oa-core/src/auth.rs` 的 `can_use` 矩阵）�
 
 ## Agent 运行模式
 
-通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 20 个工具、RBAC 与审计：
+通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 23 个工具、RBAC 与审计：
 
 | 值 | 行为 |
 |---|---|
@@ -213,7 +213,7 @@ Agent 返回 `needs_confirmation` + `pending`，前端确认后带 `confirmed=tr
 | POST | `/api/auth/change-password` | 改密并吊销该账号全部会话 |
 | POST | `/api/agent/chat` | Agent 对话（回复 + 模式 + 轨迹 + 待确认步骤） |
 | POST | `/api/agent/plan` | 计划预览（不写库） |
-| GET | `/api/tools` | 20 个工具及当前角色 `allowed` |
+| GET | `/api/tools` | 23 个工具及当前角色 `allowed` |
 | POST | `/api/tools/call` | 单工具直调（表单写操作统一入口） |
 | POST | `/api/files` | 上传附件/发票图片（base64，`entity_type=claim|contract`） |
 | GET | `/api/files?entity_type=&entity_id=` | 附件列表（按单据） |
@@ -256,7 +256,7 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | 必填 |
 
 - 五家都是 OpenAI 兼容端点，共用同一条 Rig 客户端路径；Base URL 与模型名可手改。
-- 配置存 `settings` 表（SQLite / Postgres 同表），优先级：界面配置 > 环境变量 > 离线引擎。
+- 配置存 Postgres 的 `settings` 表，优先级：界面配置 > 环境变量 > 离线引擎。
 - **API Key 明文只存服务端**：接口只返回 `sk-ab…7890` 形式的掩码，保存时留空即沿用旧 Key。
 - 「测试连接」会按当前配置发一次最小对话，失败时返回完整因果链（连接被拒 / 401 等）。
 - 界面入口与 `GET/POST /api/settings/llm` 都做了管理员校验，非管理员 403。
@@ -286,7 +286,7 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
   （出勤率 =（正常 + 外勤）/ 出勤天数），并返回待审批补卡数；
 - 行级可见性：普通员工只看本人考勤与本人补卡，HR / 财务 / 经理可看全员。
 
-## 20 个工具
+## 23 个工具
 
 | 域 | 工具 |
 |---|---|
@@ -296,16 +296,17 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 | 合同 | `contract.create` `contract.approve` `contract.query` |
 | 考勤 | `attendance.checkin` `attendance.makeup` `attendance.approve` `attendance.report` |
 | 资产 | `asset.register` `asset.assign` `asset.return` `asset.query` |
+| 自定义字段 | `custom.field.define` `custom.field.list` `custom.field.remove` |
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `OA_DB` | `oa.db` | 数据源：SQLite 文件路径，或 `postgres://` / `postgresql://` 走 Postgres（仅服务端使用） |
+| `OA_DB` | `postgresql://oa:oa@127.0.0.1:5432/oa` | 唯一数据源：Postgres 连接串（`postgres://` / `postgresql://`），非该格式会直接启动失败；密码含特殊字符需 URL 编码 |
 | `OA_ADDR` | `0.0.0.0:8787` | 监听地址；仅本机访问请设为 `127.0.0.1:8787` |
 | `OA_FILES` | `oa-files` | 附件落盘目录（仅服务端使用，多实例部署需共享卷） |
 | `OA_INSTANCE` | `local` | `/api/health` 返回的实例标识，便于确认请求落到哪个副本 |
-| `OA_PG_POOL` | `10` | Postgres 连接池上限（SQLite 固定单连接 + WAL） |
+| `OA_PG_POOL` | `10` | Postgres 连接池上限 |
 | `OA_AGENT_MODE` | `auto` | `auto` / `local` / `llm` |
 | `OA_MODEL` | `gpt-4o-mini` | 模型名 |
 | `OPENAI_API_KEY` | — | 未设置时自动走本地引擎 |
@@ -386,16 +387,24 @@ pwsh -NoProfile -File .\tools\make-updater-json.ps1 -Version v0.2.0
 ### 服务端部署
 
 服务端只有 Windows 和 Linux 两个目标，二进制与镜像行为一致：默认监听 `0.0.0.0:8787`，
-数据 = 一个 SQLite 文件 + 一个附件目录，升级只换可执行文件。
+数据 = 一个 Postgres 库 + 一个附件目录，升级只换可执行文件。业务库不再随客户端分发，
+移动端与桌面端都只通过 REST 访问服务端。
 
 **Linux · Docker（推荐）**
 
 ```bash
-docker run -d --name oa-server -p 8787:8787 -v oa-data:/data \
-  -e OA_INSTANCE=prod-1 ghcr.io/kingemma/agent-native-office-automation/oa-server:0.1.0
+cp .env.example .env          # 按需修改数据库账号密码
+docker compose up -d --build
 ```
 
+Compose 会拉起 `postgres:16-alpine` 与服务端，分别用命名卷 `oa-data`（数据库）和
+`oa-files`（附件）持久化，并等 Postgres 健康后再启动服务端。访问 `http://localhost:8787`。
+密码含 `@ : / ? #` 等特殊字符时，`.env` 中的连接串需做 URL 编码。
+
 **Linux · systemd（裸机）**
+
+先准备 Postgres 实例与 `oa` 库/账号，并按实际账号密码修改 `deploy/oa-server.service`
+里的 `OA_DB`（密码含特殊字符需 URL 编码）；单元测试也依赖 Docker 起 Postgres 容器。
 
 ```bash
 sudo useradd --system --home /opt/oa oa
@@ -410,11 +419,13 @@ sudo ufw allow 8787/tcp            # firewalld：firewall-cmd --add-port=8787/tc
 
 ```powershell
 cargo build -p oa-server --release
-pwsh -File .\deploy\install-windows.ps1 -Source .\target\release\oa-server.exe
+pwsh -File .\deploy\install-windows.ps1 -Source .\target\release\oa-server.exe `
+  -Database 'postgresql://oa:oa@127.0.0.1:5432/oa'
 ```
 
-脚本会复制到 `C:\oa`、注册开机自启的计划任务（SYSTEM、崩溃自动重启）、放行入站 8787、
-启动后轮询 `/api/health` 确认就绪。之所以用计划任务而不是 `sc create`：oa-server 是普通
+脚本会复制到 `C:\oa`、写入机器级 `OA_DB` / `OA_FILES`、注册开机自启的计划任务
+（SYSTEM、崩溃自动重启）、放行入站 8787、启动后轮询 `/api/health` 确认就绪。
+Postgres 实例需事先准备好，脚本不会自动安装数据库。之所以用计划任务而不是 `sc create`：oa-server 是普通
 控制台程序，没实现 SCM 接口，直接注册服务会因「服务未及时响应启动请求」失败。
 
 **局域网访问**
@@ -426,14 +437,15 @@ pwsh -File .\deploy\install-windows.ps1 -Source .\target\release\oa-server.exe
   `VITE_API_LAN=http://192.168.1.10:8787` 作为出厂默认值，运行时仍以用户输入为准。
 - 服务端已开 `CorsLayer` 允许任意来源，桌面端、浏览器、手机都能直连，不需要额外代理。
 
-镜像内置 `HEALTHCHECK`（探 `/api/health`），首次启动自动建库并灌演示数据，
+镜像内置 `HEALTHCHECK`（探 `/api/health`），首次启动自动建表并灌演示数据，
 **上线前必须改掉演示口令 `evan / oa123456`** 并清理演示数据（管理员调用 `POST /api/seed/reset`）。
 
 ## 数据与安全
 
 - 金额统一「分」存储；日期统一 `YYYY-MM-DD`；单号由 `next_id` 递增生成（并发安全）。
-- 存储层是异步仓储：`Store` 内部持有 `sqlx` 连接池（SQLite 单连接 + WAL，Postgres 走
-  `OA_PG_POOL`），HTTP 与 Tauri 两个入口直接 `.await` 同一套方法，不存在全局 `Mutex`。
+- 存储层是异步仓储：`Store` 内部持有 `sqlx` Postgres 连接池（上限 `OA_PG_POOL`），
+  HTTP 与 Tauri 两个入口直接 `.await` 同一套方法，不存在全局 `Mutex`。
+- 单元测试用 testcontainers 起真实 Postgres，每个测试独立 schema；需要 Docker Desktop 正在运行。
 - 密码加盐多轮 SHA-256 存储，会话 7 天有效，改密即吊销全部令牌。
 - 审计表记录工具名、真实操作者（员工号）、入参、结果，失败与拒绝同样留痕。
 - 台账白名单不包含 `users` / `sessions`，避免泄露账号信息。

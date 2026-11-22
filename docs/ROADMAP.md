@@ -1,14 +1,14 @@
 # 功能完整性盘点与开发计划
 
-> 更新于 2026-11-20。盘点基准：`crates/oa-core/src/domain.rs` 的 `FEATURES` 验收矩阵（33 项）
+> 更新于 2026-11-22。盘点基准：`crates/oa-core/src/domain.rs` 的 `FEATURES` 验收矩阵（33 项）
 > + 前后端逐文件核对。状态：`fully` 已实现 / `partial` 部分实现 / `missing` 缺失或存根。
 
 ## 结论
 
 - **33 项验收点已全部落地**（P0 正确性与安全、P1 功能补全、P2 一致性与打磨均已完成）。
 - 五大业务域（人事/财务/合同/考勤/资产）的台账、写工具、审批状态机、本地意图引擎、审计、
-  SQLite/Postgres 双后端、seed 重置、桌面三平台构建都是**真实实现**，没有空壳。
-- 工具数由 19 增至 **20**（新增 `hr.approve` 打通人事异动审批链）。
+  Postgres 单一后端（2026-11-22 完成 SQLite 移除）、seed 重置、桌面三平台构建都是**真实实现**，没有空壳。
+- 工具数增至 **23**（`hr.approve` 打通人事异动审批链，另新增 3 个自定义字段工具）。
 
 ---
 
@@ -22,7 +22,7 @@
 | FIN-02 | 预算拦截 | 预算表存在、创建占用、驳回释放都对，但 **`budget_ok=0` 时不拦截**，照常落库只提示"请人工复核" | `tools.rs:770,824-828` |
 | AG-01 | LLM 工具注册 | LLM 模式只 `.tool()` 注册了 **17 个**，漏 `contract.approve` 与 `attendance.approve`，LLM 模式下无法审批合同/补卡 | `agent/mod.rs:296-312` |
 | — | 审计接口 | `/api/audit` 只 `require_user` 未 `require_admin`，**任意登录用户可读全量审计日志**（含工具/操作者/入参/结果）；而 `tables(audit_events)` 却 admin-only，策略不一致 | `main.rs:483-496` |
-| CT-01 | Postgres 兼容 | 合同默认到期日 SQL 里硬编码 `date('now','+1 year')`（SQLite 专有），**Postgres 下 `expire_date` 为空会报错** | `tools.rs:1007` |
+| CT-01 | Postgres 兼容 | ✅ 已修复：日期改由 Rust 侧计算，SQL 方言差异（`SUBSTR(id,-N)`、标量 `MAX`）已纠正；服务端仅接受 Postgres 连接串 | `db.rs`、`tools.rs`、`store.rs` |
 
 ### P1 · 声明了但只做了一半（✅ 已于 2026-11-21 全部补全）
 
@@ -94,5 +94,5 @@
 - 合同创建/检索/到期预警/两级审批留痕（CT-01/02/03）
 - 打卡判定与工时、补卡去重、月度报表（AT-01/03/04）
 - 资产登记 SN 唯一、领用自动改派、归还回写、盘点检索（AS-01 的 SN 部分 / AS-02/03/04）
-- Agent 双语意图、敏感确认门禁、全量审计、本地引擎覆盖 19 工具（AG-02/04/05/06）
-- SQLite/Postgres 双后端 + 幂等 seed + 重置（PL-02）、KPI 与审计查询（PL-03）
+- Agent 双语意图、敏感确认门禁、全量审计、本地引擎覆盖 23 工具（AG-02/04/05/06）
+- Postgres 单一后端 + 幂等 seed + 重置（PL-02）、KPI 与审计查询（PL-03）
