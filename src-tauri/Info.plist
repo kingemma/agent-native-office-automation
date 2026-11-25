@@ -14,5 +14,8 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <!-- 打卡定位：iOS 必须提供用途说明，否则系统直接拒绝授权请求 -->
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>打卡需要获取您的位置，以确认是否在考勤范围内。</string>
 </dict>
 </plist>

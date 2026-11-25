@@ -17,7 +17,7 @@ import {
 import {
   aliased, centsArgs, dateAdd, money, tagColor, today,
 } from '../utils'
-import { auth, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool, takePageFilter } from '../store'
 
 const { t } = useI18n()
 const custom = useCustomFields()
@@ -46,7 +46,15 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
-onMounted(load)
+// 工作台「在职员工」卡片带过来的筛选：只消费一次
+onMounted(() => {
+  const filter = takePageFilter('hr')
+  if (filter.employeeStatus) {
+    tab.value = 'roster'
+    statusFilter.value = filter.employeeStatus
+  }
+  void load()
+})
 watch(dataVersion, load)
 
 /* ---------- 筛选 ---------- */
@@ -58,12 +66,20 @@ const deptOptions = computed(() => departments.value.map((d) => ({ label: d.name
 const empOptions = computed(() =>
   employees.value.filter((e) => e.status !== 'left').map((e) => ({ label: `${e.name} · ${e.no}`, value: e.id })),
 )
-const statusOptions = computed(() => EMP_STATUSES.map((s) => ({ label: t('st.' + s), value: s })))
+const statusOptions = computed(() => [
+  // 「在职」是组合口径（active + probation），与工作台卡片一致
+  { label: t('hr.statusWorking'), value: 'working' },
+  ...EMP_STATUSES.map((s) => ({ label: t('st.' + s), value: s })),
+])
 const filteredEmployees = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return employees.value.filter((e) => {
     if (deptFilter.value && e.deptId !== deptFilter.value) return false
-    if (statusFilter.value && e.status !== statusFilter.value) return false
+    if (statusFilter.value === 'working') {
+      if (e.status !== 'active' && e.status !== 'probation') return false
+    } else if (statusFilter.value && e.status !== statusFilter.value) {
+      return false
+    }
     if (!kw) return true
     return `${e.name} ${e.no} ${e.position} ${e.email}`.toLowerCase().includes(kw)
   })
@@ -98,6 +114,8 @@ const hrKpis = computed(() => [
 ])
 
 /* ---------- 表格列 ---------- */
+// 薪资与邮箱仅 HR / 管理员可见，后端对其他人返回 0 / null，这里同步隐藏列
+const canSeeSalary = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'hr')
 const rosterColumns = computed(() => [
   { title: t('hr.colNo'), dataIndex: 'no', key: 'no', locked: true },
   { title: t('hr.colName'), dataIndex: 'name', key: 'name', locked: true },
@@ -105,7 +123,9 @@ const rosterColumns = computed(() => [
   { title: t('hr.colPosition'), dataIndex: 'position', key: 'position' },
   { title: t('hr.colStatus'), key: 'status' },
   { title: t('hr.colEntry'), dataIndex: 'entryDate', key: 'entry' },
-  { title: t('hr.colSalary'), key: 'salary', align: 'right' as const },
+  ...(canSeeSalary.value
+    ? [{ title: t('hr.colSalary'), key: 'salary', align: 'right' as const }]
+    : []),
   { title: t('hr.colManager'), key: 'manager' },
   { title: t('common.action'), key: 'action', locked: true },
 ])
@@ -138,8 +158,10 @@ const detailRows = computed<{ k: string; v: string }[]>(() => {
       { k: t('hr.colNo'), v: e.no }, { k: t('hr.colName'), v: e.name },
       { k: t('hr.colDept'), v: deptName(e.deptId) }, { k: t('hr.colPosition'), v: e.position },
       { k: t('hr.colStatus'), v: t('st.' + e.status) }, { k: t('hr.colEntry'), v: e.entryDate },
-      { k: t('hr.colSalary'), v: money(e.salary) }, { k: t('hr.colManager'), v: empName(e.managerId) },
-      { k: t('hr.colEmail'), v: e.email },
+      ...(canSeeSalary.value
+        ? [{ k: t('hr.colSalary'), v: money(e.salary) }, { k: t('hr.colEmail'), v: e.email }]
+        : []),
+      { k: t('hr.colManager'), v: empName(e.managerId) },
     ].concat(
       custom.valuesFor('employee', e.id).map((v) => ({
         k: custom.allFields.value.find((f) => f.id === v.fieldId)?.label ?? v.fieldId,
@@ -282,10 +304,12 @@ async function submitApprove(): Promise<void> {
 
     <AsyncPanel :loading="loading" :error="error" @retry="load">
       <div class="oa-grid g-4 mb16">
-        <div class="stat-card" v-for="k in hrKpis" :key="k.label">
-          <div class="stat-ico" :class="'bg-' + k.color"><Icon :name="k.ico" :size="18" /></div>
+        <div class="stat-card is-inline" v-for="k in hrKpis" :key="k.label">
+          <div class="stat-row">
+            <div class="stat-ico" :class="'bg-' + k.color"><Icon :name="k.ico" :size="18" /></div>
+            <a-statistic :value="k.value" :value-style="{ fontSize: '23px', fontWeight: 700 }" />
+          </div>
           <div class="stat-label">{{ k.label }}</div>
-          <a-statistic :value="k.value" :value-style="{ fontSize: '23px', fontWeight: 700 }" />
         </div>
       </div>
 

@@ -12,7 +12,7 @@ import {
 import { QUICK_GROUPS, toClaim, toContract, type Claim, type Contract } from '../model'
 import { dateAdd, L, money, today, wan } from '../utils'
 import {
-  app, auth, bump, can, dataVersion, expandFullscreen, runCommand, submitTool,
+  app, auth, bump, can, dataVersion, expandFullscreen, gotoPage, runCommand, submitTool,
 } from '../store'
 
 const { t } = useI18n()
@@ -22,6 +22,7 @@ const metrics = ref<Metrics | null>(null)
 const claims = ref<Claim[]>([])
 const contracts = ref<Contract[]>([])
 const audit = ref<AuditEvent[]>([])
+const isAdmin = computed(() => auth.user?.role === 'admin')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -31,7 +32,8 @@ async function load(): Promise<void> {
       getMetrics(),
       listTable('claims'),
       listTable('contracts'),
-      getAudit(),
+      // 审计日志含入参与结果，后端 /api/audit 仅管理员可读；其他角色不请求，避免整页报错
+      isAdmin.value ? getAudit() : Promise.resolve<AuditEvent[]>([]),
     ])
     metrics.value = m
     claims.value = cl.map(toClaim)
@@ -61,19 +63,47 @@ const claimTotal = computed(() =>
 )
 const assetValue = computed(() => Number(m.value.asset_value_cents || 0) / 100)
 const payrollCents = computed(() => Number(m.value.payroll_cents || 0) / 100)
+// 人力成本/预算/费用趋势只对财务、经理与管理员开放（后端对其余角色已置零）
+const showFinance = computed(() => ['admin', 'finance', 'manager'].includes(auth.user?.role ?? ''))
 const trend = computed(() => (Array.isArray(m.value.trend) ? m.value.trend.map(Number) : []))
 const maxTrend = computed(() => Math.max(1, ...trend.value))
 function barH(v: number): string {
   return Math.max(3, Math.round((Number(v) / maxTrend.value) * 130)) + 'px'
 }
 
+const monthNow = today().slice(0, 7)
+// 每张卡片点击后落到对应页面并带上筛选，筛选口径与卡片的统计口径保持一致
 const kpis = computed(() => [
-  { key: 'kpiStaff', ico: 'users', color: 'blue', value: String(Number(m.value.active_employees || 0)), unit: t('common.people'), foot: t('dashboard.footStaff') },
-  { key: 'kpiApproval', ico: 'inbox', color: 'orange', value: String(Number(m.value.pending_claims || 0)), unit: t('common.result'), foot: t('dashboard.footApproval') },
-  { key: 'kpiContract', ico: 'file', color: 'cyan', value: String(Number(m.value.expiring_contracts || 0)), unit: t('common.result'), foot: t('dashboard.footContract') },
-  { key: 'kpiAttendance', ico: 'clock', color: 'green', value: attendanceRate.value.toFixed(0) + '%', unit: '', foot: t('dashboard.footAttendance') },
-  { key: 'kpiAsset', ico: 'box', color: 'red', value: wan(assetValue.value), unit: '', foot: t('dashboard.footAsset') },
-  { key: 'kpiClaim', ico: 'wallet', color: 'purple', value: wan(claimTotal.value), unit: '', foot: t('dashboard.footClaim') + ' ' + budgetPct.value + '%' },
+  {
+    key: 'kpiStaff', ico: 'users', color: 'blue', value: String(Number(m.value.active_employees || 0)),
+    unit: t('common.people'), foot: t('dashboard.footStaff'),
+    go: () => gotoPage('hr', { employeeStatus: 'working' }),
+  },
+  {
+    key: 'kpiApproval', ico: 'inbox', color: 'orange', value: String(Number(m.value.pending_claims || 0)),
+    unit: t('common.result'), foot: t('dashboard.footApproval'),
+    go: () => gotoPage('finance', { claimsStatus: 'pending' }),
+  },
+  {
+    key: 'kpiContract', ico: 'file', color: 'cyan', value: String(Number(m.value.expiring_contracts || 0)),
+    unit: t('common.result'), foot: t('dashboard.footContract'),
+    go: () => gotoPage('contract', { contractsExpiring: true }),
+  },
+  {
+    key: 'kpiAttendance', ico: 'clock', color: 'green', value: attendanceRate.value.toFixed(0) + '%',
+    unit: '', foot: t('dashboard.footAttendance'),
+    go: () => gotoPage('attendance', { attendanceMonth: monthNow }),
+  },
+  {
+    key: 'kpiAsset', ico: 'box', color: 'red', value: wan(assetValue.value), unit: '',
+    foot: t('dashboard.footAsset'),
+    go: () => gotoPage('asset', { assetStatus: 'active' }),
+  },
+  {
+    key: 'kpiClaim', ico: 'wallet', color: 'purple', value: wan(claimTotal.value), unit: '',
+    foot: t('dashboard.footClaim') + ' ' + budgetPct.value + '%',
+    go: () => gotoPage('finance', { claimTab: 'budget' }),
+  },
 ])
 
 const typeRows = computed(() => [
@@ -158,10 +188,17 @@ function runQuick(cmd: { zh: string; en: string }): void {
 
       <!-- KPI 卡片 -->
       <div class="oa-grid g-6 mb16">
-        <div class="stat-card" v-for="k in kpis" :key="k.key">
-          <div class="stat-ico" :class="'bg-' + k.color"><Icon :name="k.ico" :size="18" /></div>
+        <div
+          class="stat-card is-clickable" v-for="k in kpis" :key="k.key"
+          role="button" tabindex="0" :title="t('dashboard.cardHint')"
+          @click="k.go" @keydown.enter.prevent="k.go" @keydown.space.prevent="k.go"
+        >
+          <Icon name="arrow" :size="12" class="stat-go" />
+          <div class="stat-row">
+            <div class="stat-ico" :class="'bg-' + k.color"><Icon :name="k.ico" :size="18" /></div>
+            <a-statistic :value="k.value" :suffix="k.unit" :value-style="{ fontSize: '23px', fontWeight: 700 }" />
+          </div>
           <div class="stat-label">{{ t('dashboard.' + k.key) }}</div>
-          <a-statistic :value="k.value" :suffix="k.unit" :value-style="{ fontSize: '23px', fontWeight: 700 }" />
           <div class="stat-foot">{{ k.foot }}</div>
         </div>
       </div>
@@ -170,9 +207,11 @@ function runQuick(cmd: { zh: string; en: string }): void {
       <div class="oa-grid g-2-1 mb16">
         <a-card :title="t('dashboard.trend')">
           <template #extra>
-            <span class="small muted">{{ t('dashboard.payroll') }} <b>{{ money(payrollCents) }}</b></span>
+            <span v-if="showFinance" class="small muted">
+              {{ t('dashboard.payroll') }} <b>{{ money(payrollCents) }}</b>
+            </span>
           </template>
-          <div class="trend-wrap">
+          <div v-if="showFinance" class="trend-wrap">
             <div v-if="!trend.length" class="trend-empty">{{ t('dashboard.trendEmpty') }}</div>
             <div v-else class="trend-chart">
               <div class="trend-col" v-for="(v, i) in trend" :key="i">
@@ -184,26 +223,30 @@ function runQuick(cmd: { zh: string; en: string }): void {
             </div>
             <div class="small muted" style="padding: 8px">{{ t('dashboard.trendSub') }}</div>
           </div>
+          <a-empty v-else :description="t('dashboard.financeOnly')" />
         </a-card>
 
         <a-card :title="t('finance.budgetTitle')">
-          <p class="small muted">{{ t('finance.budgetDesc') }}</p>
-          <div style="display: flex; justify-content: space-between; margin: 10px 0">
-            <span class="small">{{ t('finance.used') }} <b>{{ money(budgetUsed) }}</b></span>
-            <span class="small">{{ t('finance.remain') }} <b>{{ money(budgetTotal - budgetUsed) }}</b></span>
-          </div>
-          <a-progress :percent="budgetPct" />
-          <div class="small muted" style="margin-top: 10px">
-            {{ budgetPct }}% · {{ money(budgetTotal) }} {{ t('finance.budgetRate') }}
-          </div>
-          <a-divider style="margin: 14px 0" />
-          <div class="small" style="margin-bottom: 8px"><b>{{ t('dashboard.typeSplit') }}</b> <span class="muted">· {{ t('dashboard.typeSplitSub') }}</span></div>
-          <div class="donut-row" v-for="r in typeRows" :key="r.key">
-            <i :style="{ background: r.color }"></i>
-            <span>{{ t('st.' + r.key) }}</span>
-            <span class="spacer"></span>
-            <b>{{ money(r.value) }}</b>
-          </div>
+          <template v-if="showFinance">
+            <p class="small muted">{{ t('finance.budgetDesc') }}</p>
+            <div style="display: flex; justify-content: space-between; margin: 10px 0">
+              <span class="small">{{ t('finance.used') }} <b>{{ money(budgetUsed) }}</b></span>
+              <span class="small">{{ t('finance.remain') }} <b>{{ money(budgetTotal - budgetUsed) }}</b></span>
+            </div>
+            <a-progress :percent="budgetPct" />
+            <div class="small muted" style="margin-top: 10px">
+              {{ budgetPct }}% · {{ money(budgetTotal) }} {{ t('finance.budgetRate') }}
+            </div>
+            <a-divider style="margin: 14px 0" />
+            <div class="small" style="margin-bottom: 8px"><b>{{ t('dashboard.typeSplit') }}</b> <span class="muted">· {{ t('dashboard.typeSplitSub') }}</span></div>
+            <div class="donut-row" v-for="r in typeRows" :key="r.key">
+              <i :style="{ background: r.color }"></i>
+              <span>{{ t('st.' + r.key) }}</span>
+              <span class="spacer"></span>
+              <b>{{ money(r.value) }}</b>
+            </div>
+          </template>
+          <a-empty v-else :description="t('dashboard.financeOnly')" />
         </a-card>
       </div>
 
@@ -245,7 +288,10 @@ function runQuick(cmd: { zh: string; en: string }): void {
               </div>
             </li>
           </ul>
-          <a-empty v-else :description="t('dashboard.emptyActivity')" />
+          <a-empty
+            v-else
+            :description="isAdmin ? t('dashboard.emptyActivity') : t('dashboard.activityAdminOnly')"
+          />
         </a-card>
       </div>
 

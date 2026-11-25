@@ -234,6 +234,70 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   })
 }
 
+/* ---------------- 打卡点配置 ---------------- */
+
+export interface AttendanceSite {
+  name: string
+  latitude: number
+  longitude: number
+  radius_m: number
+  address: string
+}
+
+/** 读打卡点列表：登录用户可读，用于展示范围说明 */
+export async function getAttendanceSites(): Promise<{
+  sites: AttendanceSite[]
+  default_radius_m: number
+}> {
+  const data = await httpGet<{ sites?: AttendanceSite[] | null; default_radius_m?: number }>(
+    '/api/settings/attendance',
+  )
+  return { sites: data.sites ?? [], default_radius_m: Number(data.default_radius_m ?? 2000) }
+}
+
+/** 保存打卡点列表（仅管理员，空数组表示不做位置限制） */
+export async function saveAttendanceSites(sites: AttendanceSite[]): Promise<AttendanceSite[]> {
+  const data = await httpPost<{ sites: AttendanceSite[] }>('/api/settings/attendance', { sites })
+  return data.sites
+}
+
+export interface AttendancePolicy {
+  work_start: string
+  work_end: string
+  lunch_minutes: number
+}
+
+/** 考勤时间策略：默认 09:00 - 18:00、午休 60 分钟 */
+export async function getAttendancePolicy(): Promise<{ policy: AttendancePolicy; exempt_self: boolean }> {
+  return httpGet<{ policy: AttendancePolicy; exempt_self: boolean }>('/api/settings/attendance-policy')
+}
+
+/** 保存考勤时间策略（仅管理员） */
+export async function saveAttendancePolicy(policy: AttendancePolicy): Promise<AttendancePolicy> {
+  const data = await httpPost<{ policy: AttendancePolicy }>('/api/settings/attendance-policy', policy)
+  return data.policy
+}
+
+export interface MakeupQuotaInfo {
+  default_quota: number
+  overrides: { employee_id: string; makeup_quota: number }[]
+  employee_id: string
+  quota: number
+  used: number
+  remaining: number
+}
+
+/** 补卡配额：默认值 + 本人（或指定员工）的已用/剩余 */
+export async function getMakeupQuota(employeeId?: string): Promise<MakeupQuotaInfo> {
+  const query = employeeId ? `?employee_id=${encodeURIComponent(employeeId)}` : ''
+  return httpGet<MakeupQuotaInfo>(`/api/settings/makeup-quota${query}`)
+}
+
+/** 保存补卡配额：不带 employeeId 改全局默认，带则覆盖该员工（仅管理员） */
+export async function saveMakeupQuota(quota: number, employeeId?: string): Promise<void> {
+  await httpPost('/api/settings/makeup-quota', { quota, employee_id: employeeId })
+}
+
 /* ---------------- 运行时配置（仅管理员） ---------------- */
 
 export interface LlmProviderPreset {

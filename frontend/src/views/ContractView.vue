@@ -16,7 +16,7 @@ import {
   type ApprovalFlow, type Contract, type Employee,
 } from '../model'
 import { aliased, centsArgs, dateAdd, money, tagColor, today, wan } from '../utils'
-import { auth, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool, takePageFilter } from '../store'
 
 const { t } = useI18n()
 const custom = useCustomFields()
@@ -45,7 +45,6 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
-onMounted(load)
 watch(dataVersion, load)
 
 const typeFilter = ref('all')
@@ -57,8 +56,16 @@ const typeOptions = computed(() => [
 ])
 const statusOptions = computed(() => [
   { label: t('common.all') + t('common.status'), value: '' },
+  // 与工作台「30 天内到期」卡片同口径：按到期日算，而不是看 status 字段
+  { label: t('contract.kpiExpiring'), value: 'window30' },
   ...['effective', 'expiring', 'review', 'archived'].map((k) => ({ label: t('st.' + k), value: k })),
 ])
+
+// 工作台卡片带过来的筛选：只消费一次
+onMounted(() => {
+  if (takePageFilter('contract').contractsExpiring) statusFilter.value = 'window30'
+  void load()
+})
 function empName(id: string): string {
   return employees.value.find((e) => e.id === id)?.name || id || '—'
 }
@@ -67,9 +74,17 @@ function ownerName(id: string): string {
 }
 const filteredContracts = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
+  const windowEnd = dateAdd(30)
+  const day = today()
   return contracts.value.filter((c) => {
     if (typeFilter.value !== 'all' && c.type !== typeFilter.value) return false
-    if (statusFilter.value && c.status !== statusFilter.value) return false
+    if (statusFilter.value === 'window30') {
+      const expiring = c.status !== 'archived' && c.expireDate !== '—'
+        && c.expireDate >= day && c.expireDate <= windowEnd
+      if (!expiring) return false
+    } else if (statusFilter.value && c.status !== statusFilter.value) {
+      return false
+    }
     if (!kw) return true
     return `${c.id} ${c.name} ${c.party}`.toLowerCase().includes(kw)
   })

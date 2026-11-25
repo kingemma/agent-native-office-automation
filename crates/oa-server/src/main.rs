@@ -13,10 +13,14 @@ use axum::{
 };
 use oa_core::auth::SessionUser;
 use oa_core::{agent, auth, domain, files, store::Store, AppState};
+use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
@@ -27,7 +31,15 @@ struct WebState {
     app: AppState,
     /// 附件落盘目录（`OA_FILES`），与 Tauri 端同一套 files 逻辑，只是根目录不同
     files: PathBuf,
+    /// 登录失败计数：账号 → (失败次数, 首次失败时间)，用于简单限流
+    login_fails: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
 }
+
+/// 同一账号 10 分钟内失败 10 次后暂时拒绝，避免在线暴力破解。
+const LOGIN_MAX_FAILS: u32 = 10;
+const LOGIN_FAIL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// 计数表上限，超出时清理过期条目，避免被大量随机用户名撑爆内存。
+const LOGIN_FAIL_TRACK_MAX: usize = 2_000;
 
 type ApiError = (StatusCode, String);
 
@@ -87,13 +99,38 @@ async fn login(
     State(st): State<WebState>,
     Json(req): Json<LoginReq>,
 ) -> Result<Json<Value>, ApiError> {
-    let (token, user) = st
-        .app
-        .store
-        .login(&req.username, &req.password)
-        .await
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
-    Ok(Json(auth::login_payload(token, user)))
+    let key = req.username.trim().to_lowercase();
+    {
+        let guard = st.login_fails.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((fails, first)) = guard.get(&key) {
+            if *fails >= LOGIN_MAX_FAILS && first.elapsed() < LOGIN_FAIL_WINDOW {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "登录失败次数过多，请 10 分钟后再试".into(),
+                ));
+            }
+        }
+    }
+
+    let result = st.app.store.login(&req.username, &req.password).await;
+    let mut guard = st.login_fails.lock().unwrap_or_else(|e| e.into_inner());
+    match result {
+        Ok((token, user)) => {
+            guard.remove(&key);
+            Ok(Json(auth::login_payload(token, user)))
+        }
+        Err(e) => {
+            if guard.len() >= LOGIN_FAIL_TRACK_MAX {
+                guard.retain(|_, (_, first)| first.elapsed() < LOGIN_FAIL_WINDOW);
+            }
+            let entry = guard.entry(key).or_insert((0, Instant::now()));
+            if entry.1.elapsed() >= LOGIN_FAIL_WINDOW {
+                *entry = (0, Instant::now());
+            }
+            entry.0 += 1;
+            Err((StatusCode::UNAUTHORIZED, e.to_string()))
+        }
+    }
 }
 
 async fn logout(
@@ -468,8 +505,18 @@ async fn metrics(
     State(st): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let _user = require_user(&st, &headers).await?;
-    let m = st.app.store.metrics().await.map_err(err500)?;
+    let user = require_user(&st, &headers).await?;
+    let mut m = st.app.store.metrics().await.map_err(err500)?;
+    // 人力成本与预算只对财务/经理/管理员开放；其他角色保留人数、待办等公共指标
+    if !matches!(user.role.as_str(), "admin" | "finance" | "manager") {
+        if let Value::Object(map) = &mut m {
+            for key in ["payroll_cents", "budget_total_cents", "budget_used_cents"] {
+                map.insert(key.into(), json!(0));
+            }
+            map.insert("trend".into(), json!([]));
+            map.insert("trend_months".into(), json!([]));
+        }
+    }
     Ok(Json(m))
 }
 
@@ -561,6 +608,237 @@ async fn save_llm_settings(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+#[derive(Deserialize)]
+struct AttendanceSiteReq {
+    #[serde(default)]
+    name: String,
+    latitude: f64,
+    longitude: f64,
+    #[serde(default)]
+    radius_m: Option<i64>,
+    #[serde(default)]
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct AttendanceSettingsReq {
+    #[serde(default)]
+    sites: Vec<AttendanceSiteReq>,
+}
+
+/// 打卡点数量上限：避免一次提交过大的配置。
+const MAX_ATTENDANCE_SITES: usize = 50;
+
+/// 打卡点配置：登录用户可读（前端展示范围说明），仅管理员可改。
+async fn get_attendance_settings(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let _ = require_user(&st, &headers).await?;
+    let sites = st.app.store.attendance_sites().await.map_err(err500)?;
+    Ok(Json(json!({
+        "sites": sites,
+        "default_radius_m": domain::DEFAULT_ATTENDANCE_RADIUS_M,
+    })))
+}
+
+/// 整体覆盖打卡点列表；每个点独立校验半径，传空数组表示不做位置限制。
+async fn save_attendance_settings(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<AttendanceSettingsReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    require_admin(&user)?;
+
+    if req.sites.len() > MAX_ATTENDANCE_SITES {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("打卡点最多 {MAX_ATTENDANCE_SITES} 个"),
+        ));
+    }
+
+    let mut sites = Vec::with_capacity(req.sites.len());
+    for (index, item) in req.sites.into_iter().enumerate() {
+        let no = index + 1;
+        if !(-90.0..=90.0).contains(&item.latitude) || !(-180.0..=180.0).contains(&item.longitude)
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("第 {no} 个打卡点经纬度超出合法范围"),
+            ));
+        }
+        let radius_m = item.radius_m.unwrap_or(domain::DEFAULT_ATTENDANCE_RADIUS_M);
+        if !(50..=100_000).contains(&radius_m) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("第 {no} 个打卡点半径需在 50 ~ 100000 米之间"),
+            ));
+        }
+        let name = item.name.trim().to_string();
+        if name.chars().count() > 50 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("第 {no} 个打卡点名称过长（最多 50 字）"),
+            ));
+        }
+        let address = item.address.trim().to_string();
+        if address.chars().count() > 200 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("第 {no} 个打卡点地址过长（最多 200 字）"),
+            ));
+        }
+        sites.push(domain::AttendanceSite {
+            name,
+            latitude: item.latitude,
+            longitude: item.longitude,
+            radius_m,
+            address,
+        });
+    }
+
+    st.app
+        .store
+        .set_attendance_sites(&sites)
+        .await
+        .map_err(err500)?;
+    Ok(Json(json!({ "ok": true, "sites": sites })))
+}
+
+#[derive(Deserialize)]
+struct AttendancePolicyReq {
+    work_start: String,
+    work_end: String,
+    lunch_minutes: i64,
+}
+
+/// 考勤时间策略：登录用户可读（含自己是否免考勤），仅管理员可改。
+async fn get_attendance_policy(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let policy = st.app.store.attendance_policy().await.map_err(err500)?;
+    let exempt = st
+        .app
+        .store
+        .is_attendance_exempt(&user.employee_id)
+        .await
+        .map_err(err500)?;
+    Ok(Json(json!({ "policy": policy, "exempt_self": exempt })))
+}
+
+async fn save_attendance_policy(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<AttendancePolicyReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    require_admin(&user)?;
+    let Some(start) = domain::parse_time(&req.work_start) else {
+        return Err((StatusCode::BAD_REQUEST, "上班时间必须是 HH:MM".into()));
+    };
+    let Some(end) = domain::parse_time(&req.work_end) else {
+        return Err((StatusCode::BAD_REQUEST, "下班时间必须是 HH:MM".into()));
+    };
+    if start >= end {
+        return Err((StatusCode::BAD_REQUEST, "下班时间必须晚于上班时间".into()));
+    }
+    if !(0..=240).contains(&req.lunch_minutes) {
+        return Err((StatusCode::BAD_REQUEST, "午休时长需在 0 ~ 240 分钟之间".into()));
+    }
+    let policy = domain::AttendancePolicy {
+        work_start: req.work_start,
+        work_end: req.work_end,
+        lunch_minutes: req.lunch_minutes,
+    };
+    st.app
+        .store
+        .set_attendance_policy(&policy)
+        .await
+        .map_err(err500)?;
+    Ok(Json(json!({ "ok": true, "policy": policy })))
+}
+
+#[derive(Deserialize)]
+struct MakeupQuotaReq {
+    quota: i64,
+    #[serde(default)]
+    employee_id: Option<String>,
+}
+
+/// 补卡配额：登录用户可读（默认值 + 自己的已用/剩余），管理员可看全部覆盖。
+async fn get_makeup_quota(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    let default_quota = st.app.store.makeup_quota_default().await.map_err(err500)?;
+    let overrides = st
+        .app
+        .store
+        .query_all("SELECT employee_id, makeup_quota FROM attendance_quotas ORDER BY employee_id")
+        .await
+        .map_err(err500)?;
+    let overrides: Vec<Value> = if user.is_admin() || matches!(user.role.as_str(), "hr" | "manager") {
+        overrides
+    } else {
+        overrides
+            .into_iter()
+            .filter(|r| r["employee_id"].as_str() == Some(user.employee_id.as_str()))
+            .collect()
+    };
+    let target = q
+        .get("employee_id")
+        .cloned()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| user.employee_id.clone());
+    let quota = st.app.store.makeup_quota_of(&target).await.map_err(err500)?;
+    let used = st.app.store.makeup_used_this_month(&target).await.map_err(err500)?;
+    Ok(Json(json!({
+        "default_quota": default_quota,
+        "overrides": overrides,
+        "employee_id": target,
+        "quota": quota,
+        "used": used,
+        "remaining": (quota - used).max(0),
+    })))
+}
+
+async fn save_makeup_quota(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<MakeupQuotaReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    require_admin(&user)?;
+    if req.quota < 0 {
+        return Err((StatusCode::BAD_REQUEST, "补卡次数不能为负数".into()));
+    }
+    match req.employee_id.filter(|s| !s.trim().is_empty()) {
+        Some(emp) => {
+            st.app
+                .store
+                .set_makeup_quota_of(&emp, req.quota)
+                .await
+                .map_err(err500)?;
+            Ok(Json(json!({
+                "ok": true, "scope": "employee", "employee_id": emp, "quota": req.quota
+            })))
+        }
+        None => {
+            st.app
+                .store
+                .set_makeup_quota_default(req.quota)
+                .await
+                .map_err(err500)?;
+            Ok(Json(json!({ "ok": true, "scope": "global", "quota": req.quota })))
+        }
+    }
+}
+
 /// 测试连接：默认用表单当前值（留空回落到已存配置），
 /// 这样「改了 Base URL 还没保存就点测试」测到的是新地址。
 #[derive(Deserialize, Default)]
@@ -617,23 +895,66 @@ async fn features() -> Json<Value> {
     Json(json!({ "features": rows, "tools": domain::TOOL_NAMES }))
 }
 
+/// CORS：默认放开（鉴权用 Bearer 令牌而非 Cookie，跨站不会自动携带）。
+///
+/// 设置 `OA_CORS_ORIGINS`（逗号分隔）后收敛为白名单，例如
+/// `OA_CORS_ORIGINS=https://oa.example.com,tauri://localhost`。
+fn cors_layer() -> CorsLayer {
+    let list = std::env::var("OA_CORS_ORIGINS")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let Some(list) = list else {
+        return CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+    };
+    let origins: Vec<axum::http::HeaderValue> = list
+        .split(',')
+        .filter_map(|o| o.trim().parse().ok())
+        .collect();
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}
+
+/// 读环境变量，未设置时用默认值；空字符串视为「已设置」，便于空密码等场景。
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 服务端唯一数据源是 Postgres；未显式配置时指向本机开发实例（docker compose up -d postgres）。
-    let db = std::env::var("OA_DB")
-        .unwrap_or_else(|_| "postgresql://oa:oa@127.0.0.1:5432/oa".to_string());
+    // 服务端唯一数据源是 Postgres。
+    // 优先 `OA_DB`（连接串，兼容存量部署）；未设置时用分解参数，
+    // 密码含 @ : / ? # 等字符也无需 URL 编码（连接串会把这些字符当语法）。
+    let store = match std::env::var("OA_DB").ok().filter(|v| !v.trim().is_empty()) {
+        Some(url) => Store::open_uri(&url).await?,
+        None => {
+            let port: u16 = env_or("OA_DB_PORT", "5432")
+                .parse()
+                .context("OA_DB_PORT 必须是 1-65535 的端口号")?;
+            Store::open_parts(
+                &env_or("OA_DB_HOST", "127.0.0.1"),
+                port,
+                &env_or("OA_DB_NAME", "oa"),
+                &env_or("OA_DB_USER", "oa"),
+                &env_or("OA_DB_PASSWORD", "oa"),
+            )
+            .await?
+        }
+    };
     // 附件根目录：默认 oa-files/；容器部署时挂卷到 OA_FILES 即可
     let files_dir = files::default_root();
     std::fs::create_dir_all(&files_dir)?;
     let state = WebState {
-        app: AppState::new(Store::open_uri(&db).await?),
+        app: AppState::new(store),
         files: files_dir,
+        login_fails: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = cors_layer();
 
     let app = Router::new()
         .route("/api/health", get(health))
@@ -659,6 +980,18 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/settings/llm",
             get(get_llm_settings).post(save_llm_settings),
+        )
+        .route(
+            "/api/settings/attendance",
+            get(get_attendance_settings).post(save_attendance_settings),
+        )
+        .route(
+            "/api/settings/attendance-policy",
+            get(get_attendance_policy).post(save_attendance_policy),
+        )
+        .route(
+            "/api/settings/makeup-quota",
+            get(get_makeup_quota).post(save_makeup_quota),
         )
         .route("/api/settings/llm/test", post(test_llm_settings))
         .route("/api/settings/llm/models", post(list_llm_models))

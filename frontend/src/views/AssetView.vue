@@ -12,7 +12,7 @@ import { useCustomFields } from '../composables/useCustomFields'
 import { listTable } from '../api/bridge'
 import { ASSET_CATEGORIES, toAsset, toEmployee, type Asset, type Employee } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
-import { auth, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool, takePageFilter } from '../store'
 
 const { t } = useI18n()
 const custom = useCustomFields()
@@ -35,7 +35,12 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
-onMounted(load)
+// 工作台「资产总值」卡片带过来的筛选：只消费一次
+onMounted(() => {
+  const filter = takePageFilter('asset')
+  if (filter.assetStatus) statusFilter.value = filter.assetStatus
+  void load()
+})
 watch(dataVersion, load)
 
 const categoryFilter = ref('all')
@@ -47,6 +52,8 @@ const categoryOptions = computed(() => [
 ])
 const statusOptions = computed(() => [
   { label: t('common.all') + t('common.status'), value: '' },
+  // 与工作台「资产总值」卡片同口径：排除已报废
+  { label: t('asset.notScrapped'), value: 'active' },
   ...['instock', 'inuse', 'repair', 'scrapped'].map((k) => ({ label: t('st.' + k), value: k })),
 ])
 const empOptions = computed(() =>
@@ -65,7 +72,11 @@ const filteredAssets = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return assets.value.filter((a) => {
     if (categoryFilter.value !== 'all' && a.category !== categoryFilter.value) return false
-    if (statusFilter.value && a.status !== statusFilter.value) return false
+    if (statusFilter.value === 'active') {
+      if (a.status === 'scrapped') return false
+    } else if (statusFilter.value && a.status !== statusFilter.value) {
+      return false
+    }
     if (!kw) return true
     return `${a.id} ${a.model} ${a.sn} ${holderName(a.holderId)}`.toLowerCase().includes(kw)
   })

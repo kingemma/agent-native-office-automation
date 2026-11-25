@@ -202,11 +202,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <!-- 侧边栏 -->
       <aside class="oa-sider" :class="{ 'is-collapsed': collapsed }">
         <div class="oa-logo">
-          <span class="oa-logo-mark"><Icon name="flow" :size="20" /></span>
-          <span>
-            <div><b>{{ t('app.name') }}</b></div>
-            <div class="oa-logo-sub">{{ t('app.sub') }}</div>
-          </span>
+          <img class="oa-logo-img oa-logo-full" src="/logo.png" :alt="t('app.name')" />
+          <img class="oa-logo-icon" src="/logo-icon.svg" alt="" />
         </div>
         <nav class="oa-menu">
           <template v-for="g in menuGroups" :key="g.key">

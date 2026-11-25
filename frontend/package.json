@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-geolocation": "^2.5.0",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "ant-design-vue": "^4.2.6",
     "dayjs": "^1.11.13",

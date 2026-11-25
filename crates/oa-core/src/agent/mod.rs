@@ -12,7 +12,7 @@
 //! - `local`：强制离线确定性引擎（功能完整性不依赖外部密钥）；
 //! - `llm`：强制真实模型，缺少密钥直接报错。
 //!
-//! 两种模式共用同一套 23 个工具、RBAC 与审计，切换不改变业务代码。
+//! 两种模式共用同一套 32 个工具、RBAC 与审计，切换不改变业务代码。
 //! 模型可插拔：管理员在「模型设置」里选 DeepSeek / Qwen / vLLM / Ollama / OpenAI，
 //! 配置落 `settings` 表（见 [`llm`]）；没有界面配置时回退到 OPENAI_API_KEY /
 //! OPENAI_BASE_URL / OA_MODEL 环境变量。
@@ -298,6 +298,9 @@ async fn run_llm(
         .tool(tools::HrPromote { state: state.clone(), user: user.clone() })
         .tool(tools::HrApprove { state: state.clone(), user: user.clone() })
         .tool(tools::HrRosterQuery { state: state.clone(), user: user.clone() })
+        .tool(tools::HrLeaveBalanceSet { state: state.clone(), user: user.clone() })
+        .tool(tools::HrMakeupQuota { state: state.clone(), user: user.clone() })
+        .tool(tools::HrAttendanceExempt { state: state.clone(), user: user.clone() })
         .tool(tools::OrgChart { state: state.clone(), user: user.clone() })
         .tool(tools::ClaimCreate { state: state.clone(), user: user.clone() })
         .tool(tools::ClaimApprove { state: state.clone(), user: user.clone() })
@@ -309,6 +312,12 @@ async fn run_llm(
         .tool(tools::AttendanceMakeup { state: state.clone(), user: user.clone() })
         .tool(tools::AttendanceApprove { state: state.clone(), user: user.clone() })
         .tool(tools::AttendanceReport { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceLeave { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceLeaveApprove { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceLeaveCancel { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceOvertime { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceOvertimeApprove { state: state.clone(), user: user.clone() })
+        .tool(tools::AttendanceOvertimeCancel { state: state.clone(), user: user.clone() })
         .tool(tools::AssetRegister { state: state.clone(), user: user.clone() })
         .tool(tools::AssetAssign { state: state.clone(), user: user.clone() })
         .tool(tools::AssetReturn { state: state.clone(), user: user.clone() })

@@ -43,7 +43,7 @@ SSE: Think / Delta / Reply / Error ──► 前端；敏感操作时前端弹�
 | 路由 | `crates/oa-server/src/main.rs` | 鉴权、SSE 输出、工具直调 |
 | 编排 | `crates/oa-core/src/agent/mod.rs` | 模式分流、Rig Agent 构建、失败回退 |
 | 意图 | `crates/oa-core/src/agent/intent.rs` | 本地解析、多步计划、跨步引用 |
-| 工具 | `crates/oa-core/src/agent/tools.rs` | 23 个工具、统一入口 call()、五道校验 |
+| 工具 | `crates/oa-core/src/agent/tools.rs` | 32 个工具、统一入口 call()、五道校验 |
 | 权限 | `crates/oa-core/src/auth.rs` | SessionUser、权限矩阵、会话解析 |
 | 存储 | `crates/oa-core/src/db.rs`、`store.rs` | Repo/Store/Tx、SQL 方言、事务、审计 |
 
@@ -80,7 +80,7 @@ SSE: Think / Delta / Reply / Error ──► 前端；敏感操作时前端弹�
 
 **LLM 模式**：
 
-- `mod.rs:293-319` 用 `AgentBuilder` 构建 Rig Agent，注入 `PREAMBLE`（`mod.rs:39-53`）+ 当日日期提示 `today_hint()`，注册 **23 个工具**，`default_max_turns(10)`。
+- `mod.rs:293-319` 用 `AgentBuilder` 构建 Rig Agent，注入 `PREAMBLE`（`mod.rs:39-53`）+ 当日日期提示 `today_hint()`，注册 **32 个工具**，`default_max_turns(10)`。
 - `PREAMBLE` 明确要求：写入必须调工具、跨模块联动、敏感操作停下等确认、**不要相信模型自报的 `user_id` / `tenant_id`**。
 - `mod.rs:347-350` `.tool_context(ToolContext::new()).max_turns(10)` 启动流式推理；工具实例在构建时就绑定了 `SessionUser`（`mod.rs:321` 注释）。
 
@@ -154,7 +154,7 @@ SSE: Think / Delta / Reply / Error ──► 前端；敏感操作时前端弹�
 
 ## 五、两个容易误解的点（已与代码对齐）
 
-1. **工具数量是 23 个**：`agent/mod.rs:296-318` 注册 23 个 `.tool()`，`domain.rs:479` 的测试断言也是 23；代码注释、README、前后端界面文案均已统一为 23。README 工具表按 6 个域列出全部 23 个，含自定义字段域的 3 个工具。
+1. **工具数量是 32 个**：`agent/mod.rs:296-325` 注册 32 个 `.tool()`，`domain.rs` 与 `tools.rs` 的测试断言也是 32；代码注释、README、前后端界面文案均已统一为 32。README 工具表按 6 个域列出全部 32 个，含自定义字段域的 3 个工具、请假与加班各 3 个工具、余额设置的 1 个工具。
 2. **没有使用 rig Hook，确认门禁靠三层协作实现**：Rust 代码中**没有实现任何 rig Hook**。真正的门禁由三处协作完成：`PREAMBLE` 指示模型停下（`mod.rs:46-47`）、`tools.rs:737-748` 返回 `needs_confirmation`、`intent.rs:735-742` 暂停循环并置 `pending`，最终由前端 `store.ts:349` 弹窗并带 `confirmed=true` 重试。相关注释、工具消息与界面文案均已按此实现表述，不再出现“AgentHook 拦截转审批”之类的规划性描述。
 
 ---

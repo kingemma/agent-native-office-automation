@@ -66,15 +66,13 @@ body {
   display: flex; flex-direction: column; transition: width .2s ease; overflow: hidden;
 }
 .oa-sider.is-collapsed { width: 64px; }
-.oa-logo { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--oa-border); white-space: nowrap; }
-.oa-logo-mark {
-  width: 36px; height: 36px; flex: none; border-radius: 10px; display: grid; place-items: center;
-  color: #fff; background: linear-gradient(135deg, #1677ff, #722ed1);
-}
-.oa-logo-mark .oa-icon svg { width: 20px; height: 20px; }
-.oa-logo b { font-size: 15px; }
-.oa-logo-sub { font-size: 10px; letter-spacing: 1.4px; color: var(--oa-muted); }
-.oa-sider.is-collapsed .oa-logo > span:last-child { display: none; }
+.oa-logo { display: flex; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--oa-border); overflow: hidden; }
+.oa-logo-img { display: block; width: auto; max-height: 40px; max-width: 100%; object-fit: contain; }
+.oa-logo-icon { display: none; width: auto; height: 30px; }
+/* 折叠态只留图形标记 */
+.oa-sider.is-collapsed .oa-logo { justify-content: center; padding: 14px 0; }
+.oa-sider.is-collapsed .oa-logo-full { display: none; }
+.oa-sider.is-collapsed .oa-logo-icon { display: block; }
 .oa-menu { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .oa-menu-group { font-size: 11px; letter-spacing: 1px; color: #b0b6c0; padding: 14px 12px 6px; white-space: nowrap; }
 .oa-sider.is-collapsed .oa-menu-group { opacity: 0; height: 10px; padding: 0; }
@@ -144,8 +142,21 @@ body {
   background: var(--oa-card); border: 1px solid var(--oa-border); border-radius: 10px; padding: 16px;
   display: flex; flex-direction: column; gap: 6px; min-height: 116px;
 }
+/* 工作台可点击的 KPI 卡：整卡跳转到对应页面并带筛选 */
+.stat-card.is-clickable { position: relative; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.stat-card.is-clickable:hover { border-color: var(--oa-primary); box-shadow: 0 4px 14px rgba(22, 119, 255, .12); transform: translateY(-1px); }
+.stat-card.is-clickable:focus-visible { outline: 2px solid var(--oa-primary); outline-offset: 2px; }
+.stat-card.is-clickable .stat-go { position: absolute; top: 14px; right: 14px; opacity: .35; color: var(--oa-primary); transform: rotate(-45deg); }
+.stat-card.is-clickable:hover .stat-go { opacity: 1; }
 .stat-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; }
 .stat-ico .oa-icon svg { width: 18px; height: 18px; }
+/* 图标与数字同排的紧凑卡（人事 KPI）：内容高度变小，去掉最小高度避免底部留白 */
+.stat-card.is-inline { min-height: 0; }
+.stat-row { display: flex; align-items: center; gap: 10px; }
+/* 工作台卡片右上角有跳转箭头，给同排行留出让位，避免大数字压到箭头 */
+.stat-card.is-clickable .stat-row { padding-right: 14px; }
+.stat-row .ant-statistic { line-height: 1; }
+.stat-row .ant-statistic-content { line-height: 1; }
 .bg-blue { background: #e6f0ff; color: #1677ff; }
 .bg-purple { background: #f4e9ff; color: #722ed1; }
 .bg-orange { background: #fff1e0; color: #fa8c16; }
@@ -200,6 +211,10 @@ body {
 .punch-stat span { font-size: 11.5px; opacity: .85; }
 .punch-btn { border: none; background: rgba(255,255,255,.95); color: #1677ff; font-weight: 600; padding: 10px 18px; border-radius: 8px; cursor: pointer; }
 .punch-btn.ghost { background: rgba(255,255,255,.16); color: #fff; }
+.punch-btn:disabled { opacity: .6; cursor: not-allowed; }
+.punch-field .ant-checkbox-wrapper span { color: #fff; }
+.punch-exempt { margin-top: 4px; font-size: 11.5px; opacity: .9; }
+.punch-geo-error { margin: 8px 0 16px; color: #e5484d; font-size: 12.5px; }
 .desc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
 .desc-item { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--oa-border); font-size: 13px; }
 .desc-k { color: var(--oa-muted); min-width: 96px; }
@@ -372,7 +387,9 @@ body {
 }
 @media (max-width: 640px) {
   .oa-sider { width: 64px; }
-  .oa-sider .oa-logo > span:last-child, .oa-menu-group, .oa-menu-item .m-label, .oa-menu-item .m-badge, .oa-sider-foot { display: none; }
+  .oa-sider .oa-logo { justify-content: center; padding: 14px 0; }
+  .oa-sider .oa-logo-full, .oa-menu-group, .oa-menu-item .m-label, .oa-menu-item .m-badge, .oa-sider-foot { display: none; }
+  .oa-sider .oa-logo-icon { display: block; }
   .oa-search { display: none; }
   .g-6, .g-4, .g-3, .g-2, .cap-grid, .org-children, .oa-form-grid, .desc-grid { grid-template-columns: 1fr; }
 }

@@ -12,11 +12,12 @@ import { useColumns } from '../composables/useColumns'
 import { useCustomFields } from '../composables/useCustomFields'
 import { getMetrics, listTable, uploadAttachment, type Metrics } from '../api/bridge'
 import {
-  CLAIM_ITEM_STANDARDS, CLAIM_TYPES, toClaim, toClaimItem, toDepartment, toEmployee, toFlow,
+  CLAIM_ITEM_STANDARDS, CLAIM_STATUSES, CLAIM_TYPES, toClaim, toClaimItem, toDepartment, toEmployee,
+  toFlow,
   type ApprovalFlow, type Claim, type ClaimItem, type Department, type Employee,
 } from '../model'
 import { aliased, centsArgs, money, tagColor, wan } from '../utils'
-import { auth, can, dataVersion, submitTool } from '../store'
+import { auth, can, dataVersion, submitTool, takePageFilter } from '../store'
 
 const { t } = useI18n()
 const custom = useCustomFields()
@@ -53,11 +54,23 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
-onMounted(load)
 watch(dataVersion, load)
 
 const tab = ref<'all' | 'daily' | 'business' | 'project' | 'budget'>('all')
+const statusFilter = ref('')
 const keyword = ref('')
+const statusOptions = computed(() => [
+  { label: t('common.all') + t('common.status'), value: '' },
+  ...CLAIM_STATUSES.map((k) => ({ label: t('st.' + k), value: k })),
+])
+
+// 工作台卡片带过来的筛选：只消费一次
+onMounted(() => {
+  const filter = takePageFilter('finance')
+  if (filter.claimsStatus) statusFilter.value = filter.claimsStatus
+  if (filter.claimTab === 'budget') tab.value = 'budget'
+  void load()
+})
 const empOptions = computed(() =>
   employees.value
     .filter((e) => e.status !== 'left')
@@ -80,6 +93,7 @@ const filteredClaims = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return claims.value.filter((c) => {
     if (tab.value !== 'all' && tab.value !== 'budget' && c.type !== tab.value) return false
+    if (statusFilter.value && c.status !== statusFilter.value) return false
     if (!kw) return true
     return `${c.id} ${c.purpose} ${c.project} ${empName(c.applicantId)}`.toLowerCase().includes(kw)
   })
@@ -382,6 +396,12 @@ async function submitClaim(): Promise<void> {
         </a-tabs>
 
         <div class="oa-toolbar">
+          <a-select
+            v-if="tab !== 'budget'"
+            v-model:value="statusFilter"
+            :options="statusOptions"
+            style="width: 150px"
+          />
           <a-input v-model:value="keyword" :placeholder="t('finance.searchPh')" allow-clear style="width: 230px" />
           <span class="spacer"></span>
           <span class="small muted">{{ t('common.total') }} {{ filteredClaims.length }} {{ t('common.result') }}</span>

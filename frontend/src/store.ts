@@ -202,6 +202,40 @@ export const app = reactive({
   returnPage: 'dashboard' as PageKey,
 })
 
+/** 工作台卡片 → 目标页的落地筛选；字段为空表示不筛选 */
+export interface PageFilter {
+  /** 财务：报销状态（pending / approved / ...） */
+  claimsStatus?: string
+  /** 财务：直接落到预算 tab */
+  claimTab?: 'budget'
+  /** 合同：只看 30 天内到期（与工作台卡片同口径，按到期日算） */
+  contractsExpiring?: boolean
+  /** 人事：在职（active + probation） */
+  employeeStatus?: string
+  /** 资产：未报废（与「资产总值」口径一致） */
+  assetStatus?: string
+  /** 考勤：月度报表定位到指定月份 */
+  attendanceMonth?: string
+}
+
+const pendingFilter: { page: PageKey | null; filter: PageFilter } = { page: null, filter: {} }
+
+/** 切页并带上落地筛选；目标页用 takePageFilter 取一次 */
+export function gotoPage(page: PageKey, filter: PageFilter = {}): void {
+  pendingFilter.page = page
+  pendingFilter.filter = filter
+  app.activePage = page
+}
+
+/** 目标页消费筛选：只返回一次，避免后续刷新覆盖用户手动改过的筛选 */
+export function takePageFilter(page: PageKey): PageFilter {
+  if (pendingFilter.page !== page) return {}
+  const filter = pendingFilter.filter
+  pendingFilter.page = null
+  pendingFilter.filter = {}
+  return filter
+}
+
 /** 写操作 / Agent 执行后自增，驱动所有业务视图刷新 */
 export const dataVersion = ref(0)
 export function bump(): void {

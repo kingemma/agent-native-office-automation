@@ -240,6 +240,127 @@ export function toMakeupRequest(r: Row): MakeupRequest {
   }
 }
 
+export interface LeaveRequest {
+  id: string
+  empId: string
+  leaveType: string
+  startDate: string
+  endDate: string
+  days: number
+  reason: string
+  status: string // pending | approved | rejected | cancelled
+  approverId: string
+  comment: string
+  decidedAt: string
+}
+export function toLeaveRequest(r: Row): LeaveRequest {
+  return {
+    id: str(pick(r, 'id')),
+    empId: str(pick(r, 'employee_id', 'employeeId')),
+    leaveType: str(pick(r, 'leave_type', 'leaveType')),
+    startDate: str(pick(r, 'start_date', 'startDate')),
+    endDate: str(pick(r, 'end_date', 'endDate')),
+    days: num(pick(r, 'days')),
+    reason: L(pick(r, 'reason')),
+    status: str(pick(r, 'status')),
+    approverId: str(pick(r, 'approver_id', 'approverId')),
+    comment: L(pick(r, 'comment')),
+    decidedAt: str(pick(r, 'decided_at', 'decidedAt')),
+  }
+}
+
+export interface LeaveBalance {
+  empId: string
+  leaveType: string
+  totalDays: number
+  usedDays: number
+  availableDays: number
+}
+export function toLeaveBalance(r: Row): LeaveBalance {
+  const totalDays = num(pick(r, 'total_days', 'totalDays'))
+  const usedDays = num(pick(r, 'used_days', 'usedDays'))
+  return {
+    empId: str(pick(r, 'employee_id', 'employeeId')),
+    leaveType: str(pick(r, 'leave_type', 'leaveType')),
+    totalDays,
+    usedDays,
+    availableDays: Math.max(0, totalDays - usedDays),
+  }
+}
+
+export interface OvertimeRequest {
+  id: string
+  empId: string
+  workDate: string
+  startTime: string
+  endTime: string
+  hours: number
+  creditedDays: number
+  reason: string
+  status: string // pending | approved | rejected | cancelled
+  approverId: string
+  comment: string
+  decidedAt: string
+}
+export function toOvertimeRequest(r: Row): OvertimeRequest {
+  return {
+    id: str(pick(r, 'id')),
+    empId: str(pick(r, 'employee_id', 'employeeId')),
+    workDate: str(pick(r, 'work_date', 'workDate')),
+    startTime: str(pick(r, 'start_time', 'startTime')),
+    endTime: str(pick(r, 'end_time', 'endTime')),
+    hours: num(pick(r, 'hours')),
+    creditedDays: num(pick(r, 'credited_days', 'creditedDays')),
+    reason: L(pick(r, 'reason')),
+    status: str(pick(r, 'status')),
+    approverId: str(pick(r, 'approver_id', 'approverId')),
+    comment: L(pick(r, 'comment')),
+    decidedAt: str(pick(r, 'decided_at', 'decidedAt')),
+  }
+}
+
+export interface LeaveBalanceLog {
+  id: number
+  empId: string
+  leaveType: string
+  deltaDays: number
+  reason: string
+  refType: string
+  refId: string
+  createdAt: string
+}
+export function toLeaveBalanceLog(r: Row): LeaveBalanceLog {
+  return {
+    id: num(pick(r, 'id')),
+    empId: str(pick(r, 'employee_id', 'employeeId')),
+    leaveType: str(pick(r, 'leave_type', 'leaveType')),
+    deltaDays: num(pick(r, 'delta_days', 'deltaDays')),
+    reason: str(pick(r, 'reason')),
+    refType: str(pick(r, 'ref_type', 'refType')),
+    refId: str(pick(r, 'ref_id', 'refId')),
+    createdAt: str(pick(r, 'created_at', 'createdAt')),
+  }
+}
+
+export interface AttendanceExemption {
+  scope: string // employee | department
+  targetId: string
+}
+export function toAttendanceExemption(r: Row): AttendanceExemption {
+  return {
+    scope: str(pick(r, 'scope')),
+    targetId: str(pick(r, 'target_id', 'targetId')),
+  }
+}
+
+/** 与后端 domain::LEAVE_TYPES 保持一致，label 走 i18n（leaveType.<key>） */
+export const LEAVE_TYPES = [
+  'annual', 'personal', 'sick', 'compensatory', 'marriage', 'maternity',
+  'paternity', 'bereavement', 'lactation', 'work_injury', 'travel', 'other',
+] as const
+/** 需要扣减额度的假期类型，与后端 domain::LEAVE_BALANCE_TYPES 一致 */
+export const LEAVE_BALANCE_TYPES = ['annual', 'compensatory'] as const
+
 export interface Asset {
   id: string
   category: string
@@ -341,13 +462,16 @@ export interface ToolEntry {
   desc: Bilingual
 }
 
-/** 23 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
+/** 32 个业务工具协议（listTools 失败时的离线兜底，与 Rust TOOL_SPECS 一致） */
 export const TOOL_CATALOG: ToolEntry[] = [
   { name: 'hr.onboard', domain: 'hr', params: 'name, dept, position, entry_date, salary, manager', desc: { zh: '创建员工档案并启动入职流程（资料→合同→设备→培训）', en: 'Create employee record and kick off the onboarding flow' } },
   { name: 'hr.offboard', domain: 'hr', params: 'employee, last_day, reason, handover_to', desc: { zh: '发起离职流程、冻结账号、生成交接与资产回收清单', en: 'Start offboarding, freeze accounts, build handover & asset return checklist' } },
   { name: 'hr.promote', domain: 'hr', params: 'employee, new_salary, new_position, effective_date, reason', desc: { zh: '晋升/涨薪，写入异动记录并按金额分派审批链', en: 'Promotion / raise: write HR change record and route approval chain' } },
   { name: 'hr.approve', domain: 'hr', params: 'case_id, decision, comment?', desc: { zh: '人事异动单（入职/离职/晋升）逐级审批，末级通过才生效', en: 'Approve HR change cases step by step; effective after the final step' } },
   { name: 'hr.roster.query', domain: 'hr', params: 'dept?, status?, keyword?', desc: { zh: '按部门、状态、关键词检索员工花名册', en: 'Query the employee roster by department, status or keyword' } },
+  { name: 'hr.leave.balance.set', domain: 'hr', params: 'employee, leave_type(annual|compensatory), total_days', desc: { zh: '设置员工年假 / 调休总额度（HR / 管理员）', en: 'Set annual / comp-time balance for an employee (HR / admin)' } },
+  { name: 'hr.makeup.quota', domain: 'hr', params: 'employee?, quota', desc: { zh: '设置每月补卡次数：不传员工改全局默认，传则覆盖该员工', en: 'Set the monthly makeup quota globally or override it for one employee' } },
+  { name: 'hr.attendance.exempt', domain: 'hr', params: 'scope(employee|department), target_id, exempt?', desc: { zh: '设置员工或部门免考勤，命中者不参与出勤统计', en: 'Mark an employee or department as attendance-exempt' } },
   { name: 'org.chart', domain: 'org', params: 'dept?', desc: { zh: '返回组织架构与各节点实时在编人数', en: 'Return the org chart with live headcount per node' } },
   { name: 'finance.claim.create', domain: 'finance', params: 'type, applicant, amount, purpose, project?, items?', desc: { zh: '创建三类报销单，自动校验预算并生成审批链', en: 'Create daily / business / project claims with budget check and approval routing' } },
   { name: 'finance.claim.approve', domain: 'finance', params: 'claim_id, decision, comment?', desc: { zh: '审批通过 / 驳回报销单，通过后进入付款队列', en: 'Approve or reject a claim; approved claims enter the payment queue' } },
@@ -359,6 +483,12 @@ export const TOOL_CATALOG: ToolEntry[] = [
   { name: 'attendance.makeup', domain: 'attendance', params: 'employee, date, reason, clock_in?, clock_out?', desc: { zh: '提交补卡申请（同人同日限一条待审），进入主管审批', en: 'Submit a punch-makeup request for supervisor approval' } },
   { name: 'attendance.approve', domain: 'attendance', params: 'request_id, decision, comment?', desc: { zh: '补卡审批：通过后才补入考勤，驳回不写考勤', en: 'Approve a makeup request; attendance is written only after approval' } },
   { name: 'attendance.report', domain: 'attendance', params: 'month, dept?, group_by', desc: { zh: '生成月度考勤报表：按人汇总出勤率/迟到/早退/缺卡/外勤/工时', en: 'Monthly attendance report per employee: rate, late, early, missing, field, hours' } },
+  { name: 'attendance.leave', domain: 'attendance', params: 'employee, leave_type, start_date, end_date, reason?', desc: { zh: '提交请假申请：按工作日扣减年假 / 调休额度并进入分级审批', en: 'Submit a leave request: deducts annual / comp-time balance and routes approval' } },
+  { name: 'attendance.leave.approve', domain: 'attendance', params: 'leave_id, decision, comment?', desc: { zh: '请假审批：末级通过后写入考勤；驳回回滚额度', en: 'Approve leave: writes attendance at the final step; rejection refunds balance' } },
+  { name: 'attendance.leave.cancel', domain: 'attendance', params: 'leave_id', desc: { zh: '撤销本人待审批的请假申请并回滚额度', en: 'Cancel your pending leave request and refund the balance' } },
+  { name: 'attendance.overtime', domain: 'attendance', params: 'employee, work_date, start_time?, end_time, reason?', desc: { zh: '提交加班申请（默认 18:00 开始），通过后按 8h=1 天转入调休', en: 'Submit an overtime request (default 18:00 start); approved hours convert at 8h = 1 day comp time' } },
+  { name: 'attendance.overtime.approve', domain: 'attendance', params: 'overtime_id, decision, comment?', desc: { zh: '加班审批：末级通过后转入调休额度并写流水', en: 'Approve overtime: credits comp time at the final step and logs the change' } },
+  { name: 'attendance.overtime.cancel', domain: 'attendance', params: 'overtime_id', desc: { zh: '撤销本人待审批的加班申请', en: 'Cancel your pending overtime request' } },
   { name: 'asset.register', domain: 'asset', params: 'category, model, sn, price, location', desc: { zh: '登记新资产并生成资产编号与二维码台账', en: 'Register a new asset, generate asset ID and inventory record' } },
   { name: 'asset.assign', domain: 'asset', params: 'asset_id, employee, note?', desc: { zh: '将资产领用给员工并写入责任人', en: 'Assign an asset to an employee and record custody' } },
   { name: 'asset.return', domain: 'asset', params: 'asset_id, condition?', desc: { zh: '归还资产，状态回写为在库并释放责任人', en: 'Return an asset, reset to in-stock and release custody' } },

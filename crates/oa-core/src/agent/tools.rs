@@ -1,4 +1,4 @@
-//! Agent 工具集 · 23 个强类型 Tool，JSON Schema 由 TOOL_SPECS 单点生成。
+//! Agent 工具集 · 27 个强类型 Tool，JSON Schema 由 TOOL_SPECS 单点生成。
 //!
 //! 采用 Rig 0.46 的 `Tool` trait（`const NAME` / `Args` / `Output` / `call`）。
 //! 每个工具用宏生成轻量 struct，共享 `call()` → `run_sql()` 分发，避免 19 份重复样板。
@@ -14,7 +14,7 @@ use crate::db::{next_id, Repo};
 use crate::params;
 use crate::{clock, domain};
 use crate::AppState;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use rig::prelude::*;
 use rig::tool::ToolExecutionError;
 use serde_json::{json, Map, Value};
@@ -26,6 +26,9 @@ pub const TOOL_SPECS: &[(&str, &str, &str, &[(&str, &str)])] = &[
     ("hr.promote", "hr", "晋升/涨薪，写入异动记录并按涨幅分派审批链", &[("employee_id", "string"), ("new_salary_cents", "integer"), ("new_position", "string"), ("effective_date", "string"), ("reason", "string")]),
     ("hr.approve", "hr", "人事异动单（入职/离职/晋升）逐级审批：通过转交下一级，末级通过才生效，驳回终止", &[("case_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("hr.roster.query", "hr", "按部门、状态、关键词检索员工花名册（排除已离职）", &[("dept_id", "string"), ("status", "string"), ("keyword", "string")]),
+    ("hr.leave.balance.set", "hr", "设置员工年假/调休总额度（HR/管理员），已使用超过新额度时拒绝", &[("employee_id", "string"), ("leave_type", "string"), ("total_days", "number")]),
+    ("hr.makeup.quota", "hr", "设置每月补卡次数：不传 employee_id 改全局默认，传则覆盖该员工", &[("employee_id", "string"), ("quota", "integer")]),
+    ("hr.attendance.exempt", "hr", "设置免考勤范围：按员工或部门添加/移除，命中者不参与出勤统计", &[("scope", "string"), ("target_id", "string"), ("exempt", "boolean")]),
     ("org.chart", "org", "返回组织架构树与各节点实时在编人数", &[]),
     ("finance.claim.create", "finance", "创建日常/商务/项目实施报销单，可带费用明细（发票/发生日期），预算占用校验并生成审批链", &[("type", "string"), ("applicant_id", "string"), ("amount_cents", "integer"), ("purpose", "string"), ("project", "string"), ("items", "array"), ("custom_fields", "object")]),
     ("finance.claim.approve", "finance", "审批通过/驳回（状态机校验），通过后进入付款队列、驳回释放预算", &[("claim_id", "string"), ("decision", "string"), ("comment", "string")]),
@@ -33,10 +36,16 @@ pub const TOOL_SPECS: &[(&str, &str, &str, &[(&str, &str)])] = &[
     ("contract.create", "contract", "创建合同台账并发起法务/用印审批", &[("name", "string"), ("party", "string"), ("type", "string"), ("amount_cents", "integer"), ("sign_date", "string"), ("expire_date", "string"), ("custom_fields", "object")]),
     ("contract.approve", "contract", "合同法务/用印审批：逐级通过或驳回，末级通过后合同生效", &[("contract_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("contract.query", "contract", "检索合同并输出 N 天内到期预警清单", &[("keyword", "string"), ("status", "string"), ("expiring_in_days", "integer")]),
-    ("attendance.checkin", "attendance", "写入上班/下班打卡，判定迟到早退并计算工时", &[("employee_id", "string"), ("type", "string"), ("time", "string"), ("source", "string")]),
+    ("attendance.checkin", "attendance", "写入上班/下班打卡（配置打卡点后必须上传定位），判定迟到早退并计算工时", &[("employee_id", "string"), ("type", "string"), ("time", "string"), ("source", "string"), ("latitude", "number"), ("longitude", "number")]),
     ("attendance.makeup", "attendance", "提交补卡申请（同人同日仅一条待审批），进入主管审批", &[("employee_id", "string"), ("date", "string"), ("reason", "string"), ("clock_in", "string"), ("clock_out", "string")]),
     ("attendance.approve", "attendance", "补卡审批：通过后才补入考勤，驳回不写考勤", &[("request_id", "string"), ("decision", "string"), ("comment", "string")]),
     ("attendance.report", "attendance", "生成月度考勤汇总：出勤率、迟到、缺卡、外勤、请假", &[("month", "string"), ("dept_id", "string")]),
+    ("attendance.leave", "attendance", "提交请假申请：按工作日扣减年假/调休余额，进入分级审批（>3 天追加 HRBP）", &[("employee_id", "string"), ("leave_type", "string"), ("start_date", "string"), ("end_date", "string"), ("reason", "string")]),
+    ("attendance.leave.approve", "attendance", "请假审批：逐级通过，末级通过后写入考勤；驳回回滚已扣减额度", &[("leave_id", "string"), ("decision", "string"), ("comment", "string")]),
+    ("attendance.leave.cancel", "attendance", "撤销本人待审批的请假申请，并回滚已预占的额度", &[("leave_id", "string")]),
+    ("attendance.overtime", "attendance", "提交加班申请：默认 18:00 开始，按小时审批，通过后按 8h=1 天转入调休额度", &[("employee_id", "string"), ("work_date", "string"), ("start_time", "string"), ("end_time", "string"), ("reason", "string")]),
+    ("attendance.overtime.approve", "attendance", "加班审批：逐级通过，末级通过后按 8h=1 天转入调休额度并写额度流水", &[("overtime_id", "string"), ("decision", "string"), ("comment", "string")]),
+    ("attendance.overtime.cancel", "attendance", "撤销本人待审批的加班申请", &[("overtime_id", "string")]),
     ("asset.register", "asset", "登记新资产（SN 唯一校验）并生成资产编号与二维码", &[("category", "string"), ("model", "string"), ("serial_no", "string"), ("price_cents", "integer"), ("location", "string"), ("custom_fields", "object")]),
     ("asset.assign", "asset", "将资产领用给员工；目标被占用时自动改派同类在库资产", &[("asset_id", "string"), ("employee_id", "string")]),
     ("asset.return", "asset", "归还资产，状态回写为在库并释放责任人，写入资产履历", &[("asset_id", "string"), ("condition", "string")]),
@@ -83,6 +92,8 @@ const PARAM_DESCRIPTIONS: &[(&str, &str)] = &[
     ("custom_fields", "自定义字段：对象，键为字段库中的 field_id，值为字段内容（下拉项传选项值）"),
     ("label", "字段显示名：JSON 字符串，形如 {\"zh\":\"紧急联系人\",\"en\":\"Emergency Contact\"}"),
     ("options", "下拉选项：JSON 字符串数组，形如 [\"选项A\",\"选项B\"]，仅 select 类型需要"),
+    ("latitude", "GPS 纬度（WGS84），配置打卡点后打卡必填"),
+    ("longitude", "GPS 经度（WGS84），配置打卡点后打卡必填"),
 ];
 
 fn param_desc(key: &str) -> &str {
@@ -192,6 +203,9 @@ oa_tool!(HrOffboard, "hr-offboard", "hr.offboard");
 oa_tool!(HrPromote, "hr-promote", "hr.promote");
 oa_tool!(HrApprove, "hr-approve", "hr.approve");
 oa_tool!(HrRosterQuery, "hr-roster-query", "hr.roster.query");
+oa_tool!(HrLeaveBalanceSet, "hr-leave-balance-set", "hr.leave.balance.set");
+oa_tool!(HrMakeupQuota, "hr-makeup-quota", "hr.makeup.quota");
+oa_tool!(HrAttendanceExempt, "hr-attendance-exempt", "hr.attendance.exempt");
 oa_tool!(OrgChart, "org-chart", "org.chart");
 oa_tool!(ClaimCreate, "finance-claim-create", "finance.claim.create");
 oa_tool!(ClaimApprove, "finance-claim-approve", "finance.claim.approve");
@@ -203,6 +217,12 @@ oa_tool!(AttendanceCheckin, "attendance-checkin", "attendance.checkin");
 oa_tool!(AttendanceMakeup, "attendance-makeup", "attendance.makeup");
 oa_tool!(AttendanceApprove, "attendance-approve", "attendance.approve");
 oa_tool!(AttendanceReport, "attendance-report", "attendance.report");
+oa_tool!(AttendanceLeave, "attendance-leave", "attendance.leave");
+oa_tool!(AttendanceLeaveApprove, "attendance-leave-approve", "attendance.leave.approve");
+oa_tool!(AttendanceLeaveCancel, "attendance-leave-cancel", "attendance.leave.cancel");
+oa_tool!(AttendanceOvertime, "attendance-overtime", "attendance.overtime");
+oa_tool!(AttendanceOvertimeApprove, "attendance-overtime-approve", "attendance.overtime.approve");
+oa_tool!(AttendanceOvertimeCancel, "attendance-overtime-cancel", "attendance.overtime.cancel");
 oa_tool!(AssetRegister, "asset-register", "asset.register");
 oa_tool!(AssetAssign, "asset-assign", "asset.assign");
 oa_tool!(AssetReturn, "asset-return", "asset.return");
@@ -227,6 +247,9 @@ pub const WIRE_TO_INTERNAL: &[(&str, &str)] = &[
     ("hr-promote", "hr.promote"),
     ("hr-approve", "hr.approve"),
     ("hr-roster-query", "hr.roster.query"),
+    ("hr-leave-balance-set", "hr.leave.balance.set"),
+    ("hr-makeup-quota", "hr.makeup.quota"),
+    ("hr-attendance-exempt", "hr.attendance.exempt"),
     ("org-chart", "org.chart"),
     ("finance-claim-create", "finance.claim.create"),
     ("finance-claim-approve", "finance.claim.approve"),
@@ -238,6 +261,12 @@ pub const WIRE_TO_INTERNAL: &[(&str, &str)] = &[
     ("attendance-makeup", "attendance.makeup"),
     ("attendance-approve", "attendance.approve"),
     ("attendance-report", "attendance.report"),
+    ("attendance-leave", "attendance.leave"),
+    ("attendance-leave-approve", "attendance.leave.approve"),
+    ("attendance-leave-cancel", "attendance.leave.cancel"),
+    ("attendance-overtime", "attendance.overtime"),
+    ("attendance-overtime-approve", "attendance.overtime.approve"),
+    ("attendance-overtime-cancel", "attendance.overtime.cancel"),
     ("asset-register", "asset.register"),
     ("asset-assign", "asset.assign"),
     ("asset-return", "asset.return"),
@@ -344,6 +373,98 @@ async fn dept_of(db: &mut dyn Repo, emp: &str) -> Result<String> {
         .to_string())
 }
 
+/// 读取管理员配置的打卡点列表；未配置时返回空列表，表示不做位置限制。
+///
+/// 优先读 `attendance.sites`（数组），并兼容旧版单点 `attendance.site`。
+async fn attendance_sites_of(db: &mut dyn Repo) -> Result<Vec<domain::AttendanceSite>> {
+    let rows = db
+        .query_json("SELECT value FROM settings WHERE key='attendance.sites'", params![])
+        .await?;
+    if let Some(raw) = rows.first().and_then(|r| r["value"].as_str()) {
+        let sites = serde_json::from_str(raw)
+            .with_context(|| format!("打卡点配置格式错误：{raw}"))?;
+        return Ok(sites);
+    }
+    let rows = db
+        .query_json("SELECT value FROM settings WHERE key='attendance.site'", params![])
+        .await?;
+    let Some(raw) = rows.first().and_then(|r| r["value"].as_str()) else {
+        return Ok(Vec::new());
+    };
+    let site = serde_json::from_str(raw)
+        .with_context(|| format!("打卡点配置格式错误：{raw}"))?;
+    Ok(vec![site])
+}
+
+/// 员工当月补卡配额：员工级覆盖优先，否则用全局默认。
+async fn makeup_quota_of(db: &mut dyn Repo, emp: &str) -> Result<i64> {
+    let overrides = db
+        .query_json(
+            "SELECT makeup_quota FROM attendance_quotas WHERE employee_id=?1",
+            params![emp],
+        )
+        .await?;
+    if let Some(quota) = overrides.first().and_then(|r| r["makeup_quota"].as_i64()) {
+        return Ok(quota);
+    }
+    let rows = db
+        .query_json(
+            "SELECT value FROM settings WHERE key='attendance.makeup_quota'",
+            params![],
+        )
+        .await?;
+    Ok(rows
+        .first()
+        .and_then(|r| r["value"].as_str())
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(domain::DEFAULT_MAKEUP_QUOTA))
+}
+
+/// 考勤时间策略：未配置时用默认 09:00 - 18:00、午休 60 分钟。
+async fn attendance_policy_of(db: &mut dyn Repo) -> Result<domain::AttendancePolicy> {
+    let rows = db
+        .query_json(
+            "SELECT value FROM settings WHERE key='attendance.policy'",
+            params![],
+        )
+        .await?;
+    Ok(rows
+        .first()
+        .and_then(|r| r["value"].as_str())
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default())
+}
+
+/// 员工是否免考勤：本人或所在部门命中即豁免。
+async fn is_attendance_exempt(db: &mut dyn Repo, emp: &str) -> Result<bool> {
+    let rows = db
+        .query_json(
+            "SELECT 1 FROM attendance_exemptions x
+              WHERE (x.scope='employee' AND x.target_id=?1)
+                 OR (x.scope='department'
+                     AND x.target_id=(SELECT dept_id FROM employees WHERE id=?1))
+              LIMIT 1",
+            params![emp],
+        )
+        .await?;
+    Ok(!rows.is_empty())
+}
+
+/// 取可选浮点数：兼容数字与数字字符串（表单有时会传字符串）。
+fn num_opt(a: &Value, keys: &[&str]) -> Option<f64> {
+    for k in keys {
+        if let Some(v) = a.get(*k) {
+            if let Some(x) = v.as_f64() {
+                return Some(x);
+            }
+            if let Some(x) = v.as_str().and_then(|s| s.trim().parse::<f64>().ok()) {
+                return Some(x);
+            }
+        }
+    }
+    None
+}
+
 /// 预算按部门优先、`ALL` 兜底：返回 (实际占用的 dept_id, total_cents, used_cents)。
 /// 创建占用、驳回释放、汇总执行率三处共用同一口径，避免各写各的。
 async fn budget_row(db: &mut dyn Repo, dept: &str) -> Result<(String, i64, i64)> {
@@ -411,12 +532,14 @@ async fn resolve_approvers(
         .await
         .unwrap_or_else(|| "E01".to_string());
     let finance = dept_leader(db, "D05").await.unwrap_or_else(|| "E10".to_string());
+    let hrbp = dept_leader(db, "D06").await.unwrap_or_else(|| "E12".to_string());
     let boss = dept_leader(db, "D01").await.unwrap_or_else(|| "E01".to_string());
 
     let mut out: Vec<String> = Vec::with_capacity(labels.len());
     for label in labels {
         let who = match *label {
             "财务经理" => finance.clone(),
+            "HRBP" => hrbp.clone(),
             "部门总监" => director.clone(),
             "总经理" => boss.clone(),
             _ => supervisor.clone(),
@@ -561,6 +684,26 @@ async fn notify(db: &mut dyn Repo, to: &str, title: &str, body: &str, kind: &str
     Ok(())
 }
 
+/// 额度变动流水：每个影响 total/used 的动作都留一条，便于对账与追溯。
+#[allow(clippy::too_many_arguments)]
+async fn log_balance(
+    db: &mut dyn Repo,
+    emp: &str,
+    leave_type: &str,
+    delta: f64,
+    reason: &str,
+    ref_type: &str,
+    ref_id: &str,
+) -> Result<()> {
+    db.execute(
+        "INSERT INTO leave_balance_logs(employee_id, leave_type, delta_days, reason, ref_type, ref_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![emp, leave_type, delta, reason, ref_type, ref_id],
+    )
+    .await?;
+    Ok(())
+}
+
 /// 无外部依赖的单调递增后缀（同一毫秒内多次写入也不会撞主键）。
 fn chrono_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -656,7 +799,56 @@ async fn write_custom_fields(db: &mut dyn Repo, entity_type: &str, entity_id: &s
 
 /* ---------------- 统一调用入口 ---------------- */
 
-/// 所有通道（Rig Agent / 本地意图引擎 / REST / Tauri / 测试）共用的唯一写入口。
+/// 工具出参的数据范围：工具实现拿不到会话身份，统一在 `call` 里按角色裁剪。
+///
+/// - `hr.roster.query`：薪资与邮箱仅管理员 / HR 可见，其他人只能看到本人那一行；
+/// - `contract.query`：合同金额与对方主体仅财务 / 经理可见，其他人只能看到本人合同。
+fn scope_output(user: &SessionUser, name: &str, out: &mut Value) {
+    let role = user.role.as_str();
+    match name {
+        "hr.roster.query" if !matches!(role, "admin" | "hr") => {
+            let Some(rows) = out.get_mut("rows").and_then(Value::as_array_mut) else {
+                return;
+            };
+            for row in rows.iter_mut() {
+                let is_self =
+                    row.get("id").and_then(Value::as_str) == Some(user.employee_id.as_str());
+                if is_self {
+                    continue;
+                }
+                if let Value::Object(map) = row {
+                    map.insert("salary_cents".into(), json!(0));
+                    map.insert("email".into(), Value::Null);
+                }
+            }
+        }
+        "contract.query" if !matches!(role, "admin" | "finance" | "manager") => {
+            let own = |r: &Value| {
+                r.get("owner_id").and_then(Value::as_str) == Some(user.employee_id.as_str())
+            };
+            let Some(map) = out.as_object_mut() else { return };
+            let mut count = 0;
+            let mut expiring = 0;
+            if let Some(rows) = map.get_mut("rows").and_then(Value::as_array_mut) {
+                rows.retain(|r| own(r));
+                count = rows.len();
+            }
+            if let Some(rows) = map.get_mut("expiring").and_then(Value::as_array_mut) {
+                rows.retain(|r| own(r));
+                expiring = rows.len();
+            }
+            let days = map.get("expiring_in_days").and_then(Value::as_i64).unwrap_or(30);
+            map.insert("count".into(), json!(count));
+            map.insert("expiring_count".into(), json!(expiring));
+            map.insert(
+                "message".into(),
+                json!(format!("命中 {count} 份合同，其中 {days} 天内到期 {expiring} 份")),
+            );
+        }
+        _ => {}
+    }
+}
+
 pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) -> Value {
     if !domain::TOOL_NAMES.contains(&name) {
         return json!({ "ok": false, "error": format!("unknown tool: {name}"), "msg": format!("未知工具：{name}") });
@@ -676,7 +868,14 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
 
     // 自助类工具的数据范围：普通员工只能以本人身份打卡、补卡、提报销。
     if user.role == "employee"
-        && matches!(name, "attendance.checkin" | "attendance.makeup" | "finance.claim.create")
+        && matches!(
+            name,
+            "attendance.checkin"
+                | "attendance.makeup"
+                | "finance.claim.create"
+                | "attendance.leave"
+                | "attendance.overtime"
+        )
     {
         let keys: &[&str] = if name == "finance.claim.create" {
             &["applicant_id", "applicantId"]
@@ -689,10 +888,46 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
                 "ok": false,
                 "denied": true,
                 "error": format!("员工只能操作本人数据：{name} 目标 {target}"),
-                "msg": "普通员工只能为本人打卡 / 补卡 / 提交报销，请改为本人后再操作"
+                "msg": "普通员工只能为本人打卡 / 补卡 / 提报销 / 请假，请改为本人后再操作"
             });
             let _ = state.store.audit(name, user.actor(), &args, &out).await;
             return out;
+        }
+    }
+
+    // 撤销只能撤本人的单据：工具实现拿不到会话身份，这里按单号反查归属。
+    if user.role == "employee"
+        && matches!(name, "attendance.leave.cancel" | "attendance.overtime.cancel")
+    {
+        let (table, keys, label) = if name == "attendance.overtime.cancel" {
+            ("overtime_requests", &["overtime_id", "overtimeId"][..], "加班单")
+        } else {
+            ("leave_requests", &["leave_id", "leaveId"][..], "请假单")
+        };
+        let id = s(&args, keys);
+        if !id.is_empty() {
+            let owner = state
+                .store
+                .query_json(
+                    &format!("SELECT employee_id FROM {table} WHERE id=?1"),
+                    params![id],
+                )
+                .await
+                .unwrap_or_default();
+            let owner = owner
+                .first()
+                .and_then(|r| r["employee_id"].as_str())
+                .unwrap_or_default();
+            if owner != user.employee_id {
+                let out = json!({
+                    "ok": false,
+                    "denied": true,
+                    "error": format!("员工只能撤销本人{label}：{id} 属于 {owner}"),
+                    "msg": format!("只能撤销本人的{label}申请")
+                });
+                let _ = state.store.audit(name, user.actor(), &args, &out).await;
+                return out;
+            }
         }
     }
 
@@ -704,6 +939,10 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
             "makeup",
             s(&args, &["request_id", "requestId", "makeup_id", "makeupId"]),
         )),
+        "attendance.leave.approve" => Some(("leave", s(&args, &["leave_id", "leaveId"]))),
+        "attendance.overtime.approve" => {
+            Some(("overtime", s(&args, &["overtime_id", "overtimeId"])))
+        }
         "hr.approve" => Some(("hr_case", s(&args, &["case_id", "caseId"]))),
         _ => None,
     };
@@ -761,6 +1000,8 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         },
     };
+    // 数据范围裁剪必须在补 `msg` 别名与写审计之前：审计里也不该留未脱敏的数据。
+    scope_output(user, name, &mut out);
     // 前端统一读 `msg` 提示；这里补齐别名，避免每个工具都手写两份。
     if let Value::Object(ref mut map) = out {
         let alias = map
@@ -777,7 +1018,7 @@ pub async fn call(state: AppState, user: &SessionUser, name: &str, args: Value) 
     out
 }
 
-/* ---------------- 23 个工具的真实业务实现 ---------------- */
+/* ---------------- 32 个工具的真实业务实现 ---------------- */
 
 async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
     match name {
@@ -1478,6 +1719,67 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             let time = if time.is_empty() { now_hhmm() } else { time };
             let source = o(a, &["source"]).unwrap_or_else(|| "agent".into());
             let date = today();
+            // 外勤打卡：允许不在打卡点范围内，也允许没有定位（客户现场信号差时）
+            let field = kb(a, "field");
+            let note = o(a, &["note", "reason"]);
+            let policy = attendance_policy_of(db).await?;
+            let exempt = is_attendance_exempt(db, &emp).await?;
+
+            // 位置门禁：配置打卡点后普通打卡必须带定位且命中任一点自己的半径；
+            // 半径按点独立，distance_m 记录最近那个点的距离；外勤只记录距离不做拦截。
+            let (latitude, longitude, distance_m, site_note) = {
+                let sites = attendance_sites_of(db).await?;
+                if sites.is_empty() {
+                    (None, None, None, None)
+                } else {
+                    let coords = (
+                        num_opt(a, &["latitude", "lat"]),
+                        num_opt(a, &["longitude", "lng", "lon"]),
+                    );
+                    match coords {
+                        (Some(lat), Some(lon)) => {
+                            let distances: Vec<(f64, &domain::AttendanceSite)> = sites
+                                .iter()
+                                .map(|s| {
+                                    (
+                                        domain::haversine_meters(s.latitude, s.longitude, lat, lon),
+                                        s,
+                                    )
+                                })
+                                .collect();
+                            // 命中点里取最近的一个；半径按点独立，最近点不一定命中
+                            let hit = distances
+                                .iter()
+                                .filter(|(d, s)| *d <= s.radius_m as f64)
+                                .min_by(|x, y| x.0.total_cmp(&y.0));
+                            let (nearest, nearest_site) = distances
+                                .iter()
+                                .min_by(|x, y| x.0.total_cmp(&y.0))
+                                .expect("sites 非空");
+                            if !field && hit.is_none() {
+                                bail!(
+                                    "不在打卡范围内：距最近打卡点「{}」{:.0} 米，允许半径 {} 米；外勤请勾选外勤打卡",
+                                    nearest_site.display_name(),
+                                    nearest,
+                                    nearest_site.radius_m
+                                );
+                            }
+                            // 消息里点名命中点及其距离；外勤未命中时点名最近点
+                            let note = hit
+                                .map(|(d, s)| (s.display_name().to_string(), d.round() as i64))
+                                .unwrap_or_else(|| {
+                                    (
+                                        nearest_site.display_name().to_string(),
+                                        nearest.round() as i64,
+                                    )
+                                });
+                            (Some(lat), Some(lon), Some(nearest.round() as i64), Some(note))
+                        }
+                        _ if field => (None, None, None, None),
+                        _ => bail!("该单位已启用定位打卡，请授权定位后重试"),
+                    }
+                }
+            };
 
             let prior = db.query_json(
                 "SELECT clock_in, clock_out FROM attendance WHERE employee_id=?1 AND work_date=?2",
@@ -1488,27 +1790,72 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 .map(|r| (r["clock_in"].as_str().map(str::to_string), r["clock_out"].as_str().map(str::to_string)))
                 .unwrap_or((None, None));
             let (ci, co) = if kind == "out" { (ci, Some(time.clone())) } else { (Some(time.clone()), co) };
-            let hours = domain::work_hours(ci.as_deref(), co.as_deref());
+            let hours = domain::work_hours_with(ci.as_deref(), co.as_deref(), policy.lunch_minutes);
             // 迟到优先：只要上班是迟到，即使下班正常 / 早退也记迟到，
             // 避免「打下班卡把上午的迟到冲掉」导致迟到统计失真（与 attendance.approve 同口径）
-            let in_status = ci.as_deref().map(|t| domain::punch_status("in", t)).unwrap_or("normal");
-            let out_status = co.as_deref().map(|t| domain::punch_status("out", t)).unwrap_or("normal");
-            let final_status = if in_status != "normal" { in_status } else { out_status };
+            let in_status = ci
+                .as_deref()
+                .map(|t| domain::punch_status_with("in", t, policy.start_min(), policy.end_min()))
+                .unwrap_or("normal");
+            let out_status = co
+                .as_deref()
+                .map(|t| domain::punch_status_with("out", t, policy.start_min(), policy.end_min()))
+                .unwrap_or("normal");
+            // 外勤统一记 field；免考勤人员不判迟到早退
+            let final_status = if field {
+                "field"
+            } else if exempt {
+                "normal"
+            } else if in_status != "normal" {
+                in_status
+            } else {
+                out_status
+            };
             let id = next_id(db, "attendance", "AT", 4).await?;
+            // 显式 CAST：未配置打卡点时经纬度为 NULL，而通用绑定会把 NULL 当 text，
+            // 直接插入 DOUBLE PRECISION 列会类型不匹配。
+            // 经纬度/距离统一按 text 绑定：通用绑定把 NULL 当 text，
+            // 若同一 SQL 时而绑 NULL、时而绑 f64/i64，sqlx 的连接级 statement cache
+            // 会复用首次 prepared 的参数类型（text），后续数值参数会被当作文本解析。
+            let latitude_text = latitude.map(|v| v.to_string());
+            let longitude_text = longitude.map(|v| v.to_string());
+            let distance_text = distance_m.map(|v| v.to_string());
             db.execute(
-                "INSERT INTO attendance(id,employee_id,work_date,clock_in,clock_out,status,source,hours)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+                "INSERT INTO attendance(id,employee_id,work_date,clock_in,clock_out,status,source,hours,note,latitude,longitude,distance_m)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,
+                        CAST(?10 AS DOUBLE PRECISION), CAST(?11 AS DOUBLE PRECISION), CAST(?12 AS BIGINT))
                  ON CONFLICT(employee_id,work_date) DO UPDATE SET
                    clock_in=excluded.clock_in, clock_out=excluded.clock_out,
-                   status=excluded.status, source=excluded.source, hours=excluded.hours",
-                params![id, emp, date, ci, co, final_status, source, hours],
+                   status=excluded.status, source=excluded.source, hours=excluded.hours,
+                   note=excluded.note,
+                   latitude=excluded.latitude, longitude=excluded.longitude, distance_m=excluded.distance_m",
+                params![id, emp, date, ci, co, final_status, source, hours, note,
+                        latitude_text, longitude_text, distance_text],
             ).await?;
+            let site_name = site_note.as_ref().map(|(name, _)| name.clone());
+            let site_text = site_note
+                .map(|(name, d)| format!("，距「{name}」{d} 米"))
+                .unwrap_or_default();
+            // 前端成功 toast 读 `msg`，Agent 回复读 `message`，两处保持同一段文案
+            let message = format!(
+                "{} {}{}卡 {}，状态 {}，工时 {:.1}h{}",
+                emp,
+                if field { "外勤" } else { "" },
+                if kind == "out" { "下班" } else { "上班" },
+                time,
+                final_status,
+                hours,
+                site_text
+            );
             Ok(json!({
                 "ok": true, "employee_id": emp, "work_date": date, "type": kind,
                 "time": time, "status": final_status, "hours": hours,
                 "clock_in": ci, "clock_out": co,
-                "message": format!("{} {}卡 {}，状态 {}，工时 {:.1}h",
-                    emp, if kind == "out" { "下班" } else { "上班" }, time, final_status, hours)
+                "field": field, "note": note, "exempt": exempt,
+                "latitude": latitude, "longitude": longitude, "distance_m": distance_m,
+                "site_name": site_name,
+                "message": message.clone(),
+                "msg": message,
             }))
         }
 
@@ -1541,6 +1888,20 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             if let Some(existing) = dup.first().and_then(|r| r["id"].as_str()) {
                 bail!("{emp} {date} 已有一条待审批的补卡申请（{existing}），请等主管审批后再提交");
             }
+            // 月度配额：待审批与已通过占用名额，驳回/撤销不占用（机会返还）
+            let quota = makeup_quota_of(db, &emp).await?;
+            let month = date.get(..7).unwrap_or(&date);
+            let used = db
+                .scalar_i64(
+                    "SELECT COUNT(*) FROM makeup_requests
+                      WHERE employee_id=?1 AND substr(work_date,1,7)=?2
+                        AND status IN ('pending','approved')",
+                    params![emp, month],
+                )
+                .await?;
+            if used >= quota {
+                bail!("{emp} 本月补卡次数已用完（{used}/{quota}），请下月再申请或联系管理员调整额度");
+            }
             let reason = o(a, &["reason"]).unwrap_or_else(|| "—".into());
             let dept = dept_of(db, &emp).await?;
             // 逐级：直属主管 → 部门总监（resolve_approvers 去重并排除本人，与报销同机制）
@@ -1560,8 +1921,9 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                 "ok": true, "request_id": id, "employee_id": emp, "work_date": date,
                 "clock_in": clock_in, "clock_out": clock_out, "reason": reason,
                 "status": "pending", "approver": approver, "chain": approvers,
-                "message": format!("{emp} {date} 补卡申请已提交（{reason}），审批链 {} 级（当前 {approver}），通过后才会补入考勤",
-                    approvers.len())
+                "quota": quota, "used": used + 1, "remaining": (quota - used - 1).max(0),
+                "message": format!("{emp} {date} 补卡申请已提交（{reason}），审批链 {} 级（当前 {approver}），本月剩余 {} 次",
+                    approvers.len(), (quota - used - 1).max(0))
             }))
         }
 
@@ -1661,10 +2023,21 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             }
 
             // 末级通过后才补入考勤：迟到/早退与工时复用打卡同一套判定
-            let status_in = domain::punch_status("in", &clock_in);
-            let status_out = domain::punch_status("out", &clock_out);
-            let att_status = if status_in != "normal" { status_in } else { status_out };
-            let hours = domain::work_hours(Some(&clock_in), Some(&clock_out));
+            let policy = attendance_policy_of(db).await?;
+            let exempt = is_attendance_exempt(db, &emp).await?;
+            let status_in =
+                domain::punch_status_with("in", &clock_in, policy.start_min(), policy.end_min());
+            let status_out =
+                domain::punch_status_with("out", &clock_out, policy.start_min(), policy.end_min());
+            let att_status = if exempt {
+                "normal"
+            } else if status_in != "normal" {
+                status_in
+            } else {
+                status_out
+            };
+            let hours =
+                domain::work_hours_with(Some(&clock_in), Some(&clock_out), policy.lunch_minutes);
             let att_id = next_id(db, "attendance", "AT", 4).await?;
             db.execute(
                 "INSERT INTO attendance(id,employee_id,work_date,clock_in,clock_out,status,source,hours)
@@ -1698,6 +2071,725 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
             }))
         }
 
+        "attendance.leave" => {
+            let emp = need(a, &["employee_id", "employeeId"], "employee_id")?;
+            if !exists(db, "SELECT 1 FROM employees WHERE id=?1", &emp).await? {
+                bail!("员工 {emp} 不存在");
+            }
+            let leave_type = need(a, &["leave_type", "leaveType"], "leave_type")?;
+            if !domain::LEAVE_TYPES.contains(&leave_type.as_str()) {
+                bail!(
+                    "不支持的请假类型 {leave_type}，可用：{}",
+                    domain::LEAVE_TYPES.join(", ")
+                );
+            }
+            let start = need(a, &["start_date", "startDate"], "start_date")?;
+            let end = need(a, &["end_date", "endDate"], "end_date")?;
+            let days = domain::workdays_between(&start, &end);
+            if days <= 0 {
+                bail!("{start} ~ {end} 没有工作日（或日期区间非法），请假天数必须大于 0");
+            }
+            // 同一人区间重叠的单据不允许并存，避免重复扣减额度
+            let overlap = db
+                .query_json(
+                    "SELECT id FROM leave_requests
+                      WHERE employee_id=?1 AND status IN ('pending','approved')
+                        AND start_date <= ?3 AND end_date >= ?2
+                      LIMIT 1",
+                    params![emp, start, end],
+                )
+                .await?;
+            if let Some(existing) = overlap.first().and_then(|r| r["id"].as_str()) {
+                bail!("{start} ~ {end} 与已有请假单 {existing} 重叠，请调整日期或先撤销原单");
+            }
+
+            // 先取号：额度流水需要引用单据 ID
+            let id = next_id(db, "leave_requests", &format!("LV-{}", year()), 4).await?;
+            // 年假/调休先预占额度：原子 UPDATE 保证并发下不会超扣
+            let mut deducted = 0.0f64;
+            if domain::LEAVE_BALANCE_TYPES.contains(&leave_type.as_str()) {
+                db.execute(
+                    "INSERT INTO leave_balances(employee_id, leave_type, total_days, used_days)
+                     VALUES(?1, ?2, 0, 0) ON CONFLICT DO NOTHING",
+                    params![emp, leave_type],
+                )
+                .await?;
+                let updated = db
+                    .execute(
+                        "UPDATE leave_balances SET used_days = used_days + ?3
+                          WHERE employee_id=?1 AND leave_type=?2 AND used_days + ?3 <= total_days",
+                        params![emp, leave_type, days as f64],
+                    )
+                    .await?;
+                if updated == 0 {
+                    let bal = db
+                        .query_json(
+                            "SELECT total_days, used_days FROM leave_balances
+                              WHERE employee_id=?1 AND leave_type=?2",
+                            params![emp, leave_type],
+                        )
+                        .await?;
+                    let total = bal.first().and_then(|r| r["total_days"].as_f64()).unwrap_or(0.0);
+                    let used = bal.first().and_then(|r| r["used_days"].as_f64()).unwrap_or(0.0);
+                    bail!(
+                        "{leave_type} 余额不足：剩余 {:.1} 天，本次需要 {} 天",
+                        (total - used).max(0.0),
+                        days
+                    );
+                }
+                deducted = days as f64;
+                log_balance(db, &emp, &leave_type, -deducted, "请假预占", "leave", &id).await?;
+            }
+
+            let dept = dept_of(db, &emp).await?;
+            let approvers = resolve_approvers(db, &emp, &dept, &domain::leave_chain(days)).await?;
+            let approver = approvers.first().cloned().unwrap_or_else(|| "E01".to_string());
+            let reason = o(a, &["reason"]).unwrap_or_else(|| "—".into());
+            db.execute(
+                "INSERT INTO leave_requests(id,employee_id,leave_type,start_date,end_date,days,deducted_days,reason,status,approver_id)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9)",
+                params![id, emp, leave_type, start, end, days as f64, deducted, reason, approver],
+            )
+            .await?;
+            add_flow(db, "leave", &id, &approvers).await?;
+            notify(
+                db,
+                &approver,
+                "请假待审批",
+                &format!("{emp} {start} ~ {end} {leave_type} {days} 天：{reason}"),
+                "attendance",
+            )
+            .await?;
+            let balance_hint = if deducted > 0.0 {
+                format!("，已预占 {deducted:.1} 天额度")
+            } else {
+                String::new()
+            };
+            Ok(json!({
+                "ok": true, "leave_id": id, "employee_id": emp, "leave_type": leave_type,
+                "start_date": start, "end_date": end, "days": days,
+                "deducted_days": deducted, "reason": reason,
+                "status": "pending", "approver": approver, "chain": approvers,
+                "message": format!(
+                    "{emp} {start} ~ {end} 请假 {days} 个工作日（{leave_type}）已提交{balance_hint}，审批链 {} 级（当前 {approver}）",
+                    approvers.len()
+                )
+            }))
+        }
+
+        "attendance.leave.approve" => {
+            let id = need(a, &["leave_id", "leaveId"], "leave_id")?;
+            let decision = o(a, &["decision"]).unwrap_or_else(|| "approve".into());
+            let row = db
+                .query_json(
+                    "SELECT employee_id, leave_type, start_date, end_date, days, deducted_days, status
+                       FROM leave_requests WHERE id=?1",
+                    params![id],
+                )
+                .await?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("请假单 {id} 不存在"))?;
+            let status = row["status"].as_str().unwrap_or("");
+            if status != "pending" {
+                bail!("请假单 {id} 当前状态是 {status}，只有待审批的可以操作");
+            }
+            let emp = row["employee_id"].as_str().unwrap_or("").to_string();
+            let leave_type = row["leave_type"].as_str().unwrap_or("").to_string();
+            let start = row["start_date"].as_str().unwrap_or("").to_string();
+            let end = row["end_date"].as_str().unwrap_or("").to_string();
+            let days = row["days"].as_f64().unwrap_or(0.0);
+            let deducted = row["deducted_days"].as_f64().unwrap_or(0.0);
+
+            let flow = db
+                .query_json(
+                    "SELECT id, step, approver FROM approval_flows
+                      WHERE entity_type='leave' AND entity_id=?1 AND status='pending'
+                      ORDER BY step ASC LIMIT 1",
+                    params![id],
+                )
+                .await?;
+            let Some(node) = flow.first() else {
+                bail!("{id} 没有待审批节点，可能已被处理");
+            };
+            let flow_id = node["id"].as_str().unwrap_or_default().to_string();
+            let step = node["step"].as_i64().unwrap_or(1);
+            let approver = node["approver"].as_str().unwrap_or_default().to_string();
+            let stamp = clock::local_datetime();
+
+            if is_reject(&decision) {
+                db.execute(
+                    "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
+                    params![flow_id, s(a, &["comment"]), stamp],
+                )
+                .await?;
+                db.execute(
+                    "UPDATE leave_requests SET status='rejected', comment=?2, decided_at=?3 WHERE id=?1",
+                    params![id, s(a, &["comment"]), stamp],
+                )
+                .await?;
+                if deducted > 0.0 {
+                    db.execute(
+                        "UPDATE leave_balances SET used_days = GREATEST(0, used_days - ?3)
+                          WHERE employee_id=?1 AND leave_type=?2",
+                        params![emp, leave_type, deducted],
+                    )
+                    .await?;
+                    log_balance(db, &emp, &leave_type, deducted, "请假驳回回滚", "leave", &id)
+                        .await?;
+                }
+                notify(
+                    db,
+                    &emp,
+                    "请假已驳回",
+                    &format!("{start} ~ {end} 请假被 {approver} 驳回"),
+                    "attendance",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "leave_id": id, "status": "rejected",
+                    "employee_id": emp, "start_date": start, "end_date": end,
+                    "step": step, "approver": approver, "refunded_days": deducted,
+                    "message": format!("请假单 {id}（{emp} {start} ~ {end}）已被驳回，未写入考勤{}",
+                        if deducted > 0.0 { format!("，已回滚 {deducted:.1} 天额度") } else { String::new() })
+                }));
+            }
+
+            // 还有下一级待审节点时只转交；末级才写考勤
+            let next = db
+                .query_json(
+                    "SELECT approver, step FROM approval_flows
+                      WHERE entity_type='leave' AND entity_id=?1 AND status='pending' AND step > ?2
+                      ORDER BY step ASC LIMIT 1",
+                    params![id, step],
+                )
+                .await?;
+
+            // 末级通过前先查考勤冲突，避免覆盖已有的正常打卡
+            if next.is_empty() {
+                let conflict = db
+                    .query_json(
+                        "SELECT work_date, status FROM attendance
+                          WHERE employee_id=?1 AND work_date BETWEEN ?2 AND ?3
+                            AND status IN ('normal','late','early','field')
+                          ORDER BY work_date LIMIT 1",
+                        params![emp, start, end],
+                    )
+                    .await?;
+                if let Some(c) = conflict.first() {
+                    let date = c["work_date"].as_str().unwrap_or("");
+                    let st = c["status"].as_str().unwrap_or("");
+                    bail!("{date} 已有考勤记录（{st}），请先处理该日打卡再审批通过");
+                }
+            }
+
+            db.execute(
+                "UPDATE approval_flows SET status='done', comment=?2, acted_at=?3 WHERE id=?1",
+                params![flow_id, s(a, &["comment"]), stamp],
+            )
+            .await?;
+
+            if let Some(n) = next.first() {
+                let next_approver = n["approver"].as_str().unwrap_or_default().to_string();
+                let next_step = n["step"].as_i64().unwrap_or(step + 1);
+                db.execute(
+                    "UPDATE leave_requests SET approver_id=?2 WHERE id=?1",
+                    params![id, next_approver],
+                )
+                .await?;
+                notify(
+                    db,
+                    &next_approver,
+                    "请假待审批",
+                    &format!("{id}（{emp} {start} ~ {end}）已通过第 {step} 级，待你审批"),
+                    "attendance",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "leave_id": id, "status": "pending",
+                    "step": step, "approver": approver,
+                    "next_approver": next_approver, "next_step": next_step,
+                    "message": format!("{id} 第 {step} 级审批已通过，转交第 {next_step} 级（{next_approver}）")
+                }));
+            }
+
+            // 末级通过：区间内每个工作日标记为 leave
+            let workdays = domain::workdays_in(&start, &end);
+            let mut written = 0;
+            for date in &workdays {
+                let att_id = next_id(db, "attendance", "AT", 4).await?;
+                db.execute(
+                    "INSERT INTO attendance(id,employee_id,work_date,status,source,hours)
+                     VALUES(?1,?2,?3,'leave','leave',0)
+                     ON CONFLICT(employee_id,work_date) DO UPDATE SET
+                       status='leave', source='leave', hours=0, clock_in=NULL, clock_out=NULL",
+                    params![att_id, emp, date],
+                )
+                .await?;
+                written += 1;
+            }
+            db.execute(
+                "UPDATE leave_requests SET status='approved', comment=?2, decided_at=?3 WHERE id=?1",
+                params![id, s(a, &["comment"]), stamp],
+            )
+            .await?;
+            notify(
+                db,
+                &emp,
+                "请假已通过",
+                &format!("{start} ~ {end} 请假已由 {approver} 通过，考勤已标记为请假"),
+                "attendance",
+            )
+            .await?;
+            Ok(json!({
+                "ok": true, "leave_id": id, "status": "approved",
+                "employee_id": emp, "start_date": start, "end_date": end,
+                "days": days, "attendance_days": written,
+                "step": step, "approver": approver,
+                "message": format!("请假单 {id}（{emp} {start} ~ {end}）已通过，{written} 个工作日已标记为请假")
+            }))
+        }
+
+        "attendance.leave.cancel" => {
+            let id = need(a, &["leave_id", "leaveId"], "leave_id")?;
+            let row = db
+                .query_json(
+                    "SELECT employee_id, leave_type, start_date, end_date, deducted_days, status
+                       FROM leave_requests WHERE id=?1",
+                    params![id],
+                )
+                .await?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("请假单 {id} 不存在"))?;
+            let status = row["status"].as_str().unwrap_or("");
+            if status != "pending" {
+                bail!("请假单 {id} 当前状态是 {status}，只有待审批的可以撤销");
+            }
+            let emp = row["employee_id"].as_str().unwrap_or("").to_string();
+            let leave_type = row["leave_type"].as_str().unwrap_or("").to_string();
+            let start = row["start_date"].as_str().unwrap_or("").to_string();
+            let end = row["end_date"].as_str().unwrap_or("").to_string();
+            let deducted = row["deducted_days"].as_f64().unwrap_or(0.0);
+            db.execute(
+                "UPDATE leave_requests SET status='cancelled', decided_at=?2 WHERE id=?1",
+                params![id, clock::local_datetime()],
+            )
+            .await?;
+            db.execute(
+                "UPDATE approval_flows SET status='cancelled'
+                  WHERE entity_type='leave' AND entity_id=?1 AND status='pending'",
+                params![id],
+            )
+            .await?;
+            if deducted > 0.0 {
+                db.execute(
+                    "UPDATE leave_balances SET used_days = GREATEST(0, used_days - ?3)
+                      WHERE employee_id=?1 AND leave_type=?2",
+                    params![emp, leave_type, deducted],
+                )
+                .await?;
+                log_balance(db, &emp, &leave_type, deducted, "请假撤销回滚", "leave", &id)
+                    .await?;
+            }
+            Ok(json!({
+                "ok": true, "leave_id": id, "status": "cancelled",
+                "employee_id": emp, "start_date": start, "end_date": end,
+                "refunded_days": deducted,
+                "message": format!("请假单 {id} 已撤销{}", if deducted > 0.0 {
+                    format!("，已回滚 {deducted:.1} 天额度")
+                } else { String::new() })
+            }))
+        }
+
+        "hr.leave.balance.set" => {
+            let emp = need(a, &["employee_id", "employeeId"], "employee_id")?;
+            if !exists(db, "SELECT 1 FROM employees WHERE id=?1", &emp).await? {
+                bail!("员工 {emp} 不存在");
+            }
+            let leave_type = need(a, &["leave_type", "leaveType"], "leave_type")?;
+            if !domain::LEAVE_BALANCE_TYPES.contains(&leave_type.as_str()) {
+                bail!("只有年假（annual）与调休（compensatory）维护额度");
+            }
+            let total = num_opt(a, &["total_days", "totalDays"])
+                .ok_or_else(|| anyhow::anyhow!("缺少必填参数 total_days"))?;
+            if total < 0.0 {
+                bail!("总额度不能为负数");
+            }
+            let bal = db
+                .query_json(
+                    "SELECT total_days, used_days FROM leave_balances
+                      WHERE employee_id=?1 AND leave_type=?2",
+                    params![emp, leave_type],
+                )
+                .await?;
+            let old_total = bal.first().and_then(|r| r["total_days"].as_f64()).unwrap_or(0.0);
+            let used = bal.first().and_then(|r| r["used_days"].as_f64()).unwrap_or(0.0);
+            if total < used {
+                bail!("{emp} 已使用 {used:.1} 天，总额度不能低于已使用天数");
+            }
+            db.execute(
+                "INSERT INTO leave_balances(employee_id, leave_type, total_days, used_days)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(employee_id, leave_type) DO UPDATE SET total_days=excluded.total_days",
+                params![emp, leave_type, total, used],
+            )
+            .await?;
+            let delta = total - old_total;
+            if delta.abs() > f64::EPSILON {
+                log_balance(db, &emp, &leave_type, delta, "HR 调整额度", "manual", "").await?;
+            }
+            Ok(json!({
+                "ok": true, "employee_id": emp, "leave_type": leave_type,
+                "total_days": total, "used_days": used, "available_days": total - used,
+                "message": format!("{emp} {leave_type} 额度已设为 {total:.1} 天（已用 {used:.1} 天）")
+            }))
+        }
+
+        "hr.makeup.quota" => {
+            let quota_raw = need(a, &["quota", "makeup_quota", "makeupQuota"], "quota")?;
+            let quota = quota_raw
+                .parse::<i64>()
+                .map_err(|_| anyhow::anyhow!("quota 必须是整数"))?;
+            if quota < 0 {
+                bail!("补卡次数不能为负数");
+            }
+            match o(a, &["employee_id", "employeeId"]) {
+                Some(emp) if !emp.is_empty() => {
+                    if !exists(db, "SELECT 1 FROM employees WHERE id=?1", &emp).await? {
+                        bail!("员工 {emp} 不存在");
+                    }
+                    db.execute(
+                        "INSERT INTO attendance_quotas(employee_id, makeup_quota) VALUES(?1, ?2)
+                         ON CONFLICT(employee_id) DO UPDATE SET makeup_quota=excluded.makeup_quota",
+                        params![emp, quota],
+                    )
+                    .await?;
+                    Ok(json!({
+                        "ok": true, "scope": "employee", "employee_id": emp, "quota": quota,
+                        "message": format!("{emp} 每月补卡次数已设为 {quota} 次（覆盖全局默认）")
+                    }))
+                }
+                _ => {
+                    db.execute(
+                        "INSERT INTO settings(key, value) VALUES('attendance.makeup_quota', ?1)
+                         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![quota.to_string()],
+                    )
+                    .await?;
+                    Ok(json!({
+                        "ok": true, "scope": "global", "quota": quota,
+                        "message": format!("每月补卡默认次数已设为 {quota} 次")
+                    }))
+                }
+            }
+        }
+
+        "hr.attendance.exempt" => {
+            let scope = need(a, &["scope"], "scope")?;
+            if !domain::EXEMPT_SCOPES.contains(&scope.as_str()) {
+                bail!("scope 必须是 employee 或 department");
+            }
+            let target = need(
+                a,
+                &["target_id", "targetId", "employee_id", "dept_id"],
+                "target_id",
+            )?;
+            let table = if scope == "employee" {
+                "employees"
+            } else {
+                "departments"
+            };
+            if !exists(db, &format!("SELECT 1 FROM {table} WHERE id=?1"), &target).await? {
+                bail!("{scope} {target} 不存在");
+            }
+            // 默认添加豁免；显式 exempt=false 才是移除
+            let exempt = a.get("exempt").and_then(Value::as_bool).unwrap_or(true);
+            if exempt {
+                db.execute(
+                    "INSERT INTO attendance_exemptions(scope, target_id) VALUES(?1, ?2)
+                     ON CONFLICT DO NOTHING",
+                    params![scope, target],
+                )
+                .await?;
+            } else {
+                db.execute(
+                    "DELETE FROM attendance_exemptions WHERE scope=?1 AND target_id=?2",
+                    params![scope, target],
+                )
+                .await?;
+            }
+            Ok(json!({
+                "ok": true, "scope": scope, "target_id": target, "exempt": exempt,
+                "message": if exempt {
+                    format!("已设置 {scope} {target} 免考勤，不参与出勤统计")
+                } else {
+                    format!("已取消 {scope} {target} 的免考勤")
+                }
+            }))
+        }
+
+        "attendance.overtime" => {
+            let emp = need(a, &["employee_id", "employeeId"], "employee_id")?;
+            if !exists(db, "SELECT 1 FROM employees WHERE id=?1", &emp).await? {
+                bail!("员工 {emp} 不存在");
+            }
+            let date = o(a, &["work_date", "workDate", "date"]).unwrap_or_else(|| today());
+            let date = if date.is_empty() { today() } else { date };
+            // 默认 18:00 开始，和常见的下班后加班场景一致
+            let start = o(a, &["start_time", "startTime"])
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| domain::OVERTIME_DEFAULT_START.to_string());
+            let end = need(a, &["end_time", "endTime"], "end_time")?;
+            let hours = domain::overtime_hours(&start, &end).ok_or_else(|| {
+                anyhow::anyhow!("加班时间不合法：{start} ~ {end}（结束等于开始或超过 16 小时）")
+            })?;
+            // 同人同日只留一条待审批，避免主管重复处理
+            let dup = db
+                .query_json(
+                    "SELECT id FROM overtime_requests
+                      WHERE employee_id=?1 AND work_date=?2 AND status='pending' LIMIT 1",
+                    params![emp, date],
+                )
+                .await?;
+            if let Some(existing) = dup.first().and_then(|r| r["id"].as_str()) {
+                bail!("{emp} {date} 已有一条待审批的加班申请（{existing}）");
+            }
+            let dept = dept_of(db, &emp).await?;
+            let approvers =
+                resolve_approvers(db, &emp, &dept, &domain::overtime_chain(hours)).await?;
+            let approver = approvers.first().cloned().unwrap_or_else(|| "E01".to_string());
+            let reason = o(a, &["reason"]).unwrap_or_else(|| "—".into());
+            let id = next_id(db, "overtime_requests", &format!("OT-{}", year()), 4).await?;
+            db.execute(
+                "INSERT INTO overtime_requests(id,employee_id,work_date,start_time,end_time,hours,credited_days,reason,status,approver_id)
+                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,'pending',?8)",
+                params![id, emp, date, start, end, hours, reason, approver],
+            )
+            .await?;
+            add_flow(db, "overtime", &id, &approvers).await?;
+            notify(
+                db,
+                &approver,
+                "加班待审批",
+                &format!("{emp} {date} {start} ~ {end}（{hours}h）：{reason}"),
+                "attendance",
+            )
+            .await?;
+            Ok(json!({
+                "ok": true, "overtime_id": id, "employee_id": emp, "work_date": date,
+                "start_time": start, "end_time": end, "hours": hours,
+                "reason": reason, "status": "pending", "approver": approver, "chain": approvers,
+                "message": format!("{emp} {date} 加班 {start} ~ {end}（{hours}h）已提交，审批链 {} 级（当前 {approver}）", approvers.len())
+            }))
+        }
+
+        "attendance.overtime.approve" => {
+            let id = need(a, &["overtime_id", "overtimeId"], "overtime_id")?;
+            let decision = o(a, &["decision"]).unwrap_or_else(|| "approve".into());
+            let row = db
+                .query_json(
+                    "SELECT employee_id, work_date, start_time, end_time, hours, credited_days, status
+                       FROM overtime_requests WHERE id=?1",
+                    params![id],
+                )
+                .await?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("加班单 {id} 不存在"))?;
+            let status = row["status"].as_str().unwrap_or("");
+            if status != "pending" {
+                bail!("加班单 {id} 当前状态是 {status}，只有待审批的可以操作");
+            }
+            let emp = row["employee_id"].as_str().unwrap_or("").to_string();
+            let date = row["work_date"].as_str().unwrap_or("").to_string();
+            let hours = row["hours"].as_f64().unwrap_or(0.0);
+            let credited_before = row["credited_days"].as_f64().unwrap_or(0.0);
+
+            let flow = db
+                .query_json(
+                    "SELECT id, step, approver FROM approval_flows
+                      WHERE entity_type='overtime' AND entity_id=?1 AND status='pending'
+                      ORDER BY step ASC LIMIT 1",
+                    params![id],
+                )
+                .await?;
+            let Some(node) = flow.first() else {
+                bail!("{id} 没有待审批节点，可能已被处理");
+            };
+            let flow_id = node["id"].as_str().unwrap_or_default().to_string();
+            let step = node["step"].as_i64().unwrap_or(1);
+            let approver = node["approver"].as_str().unwrap_or_default().to_string();
+            let stamp = clock::local_datetime();
+
+            if is_reject(&decision) {
+                db.execute(
+                    "UPDATE approval_flows SET status='rejected', comment=?2, acted_at=?3 WHERE id=?1",
+                    params![flow_id, s(a, &["comment"]), stamp],
+                )
+                .await?;
+                db.execute(
+                    "UPDATE overtime_requests SET status='rejected', comment=?2, decided_at=?3 WHERE id=?1",
+                    params![id, s(a, &["comment"]), stamp],
+                )
+                .await?;
+                // 防御性回滚：正常流程在末级通过时才转入，这里覆盖异常重放
+                if credited_before > 0.0 {
+                    db.execute(
+                        "UPDATE leave_balances SET total_days = GREATEST(0, total_days - ?2)
+                          WHERE employee_id=?1 AND leave_type='compensatory'",
+                        params![emp, credited_before],
+                    )
+                    .await?;
+                    log_balance(
+                        db,
+                        &emp,
+                        "compensatory",
+                        -credited_before,
+                        "加班驳回回滚",
+                        "overtime",
+                        &id,
+                    )
+                    .await?;
+                }
+                notify(
+                    db,
+                    &emp,
+                    "加班已驳回",
+                    &format!("{date} 加班（{hours}h）被 {approver} 驳回"),
+                    "attendance",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "overtime_id": id, "status": "rejected",
+                    "employee_id": emp, "work_date": date, "hours": hours,
+                    "step": step, "approver": approver, "refunded_days": credited_before,
+                    "message": format!("加班单 {id}（{emp} {date} {hours}h）已被驳回")
+                }));
+            }
+
+            let next = db
+                .query_json(
+                    "SELECT approver, step FROM approval_flows
+                      WHERE entity_type='overtime' AND entity_id=?1 AND status='pending' AND step > ?2
+                      ORDER BY step ASC LIMIT 1",
+                    params![id, step],
+                )
+                .await?;
+
+            db.execute(
+                "UPDATE approval_flows SET status='done', comment=?2, acted_at=?3 WHERE id=?1",
+                params![flow_id, s(a, &["comment"]), stamp],
+            )
+            .await?;
+
+            if let Some(n) = next.first() {
+                let next_approver = n["approver"].as_str().unwrap_or_default().to_string();
+                let next_step = n["step"].as_i64().unwrap_or(step + 1);
+                db.execute(
+                    "UPDATE overtime_requests SET approver_id=?2 WHERE id=?1",
+                    params![id, next_approver],
+                )
+                .await?;
+                notify(
+                    db,
+                    &next_approver,
+                    "加班待审批",
+                    &format!("{id}（{emp} {date} {hours}h）已通过第 {step} 级，待你审批"),
+                    "attendance",
+                )
+                .await?;
+                return Ok(json!({
+                    "ok": true, "overtime_id": id, "status": "pending",
+                    "step": step, "approver": approver,
+                    "next_approver": next_approver, "next_step": next_step,
+                    "message": format!("{id} 第 {step} 级审批已通过，转交第 {next_step} 级（{next_approver}）")
+                }));
+            }
+
+            // 末级通过：按 8h = 1 天转入调休额度（保留精确小时折算，如 3h = 0.375 天）
+            let credited = hours / domain::OVERTIME_HOURS_PER_DAY;
+            db.execute(
+                "INSERT INTO leave_balances(employee_id, leave_type, total_days, used_days)
+                 VALUES(?1, 'compensatory', 0, 0) ON CONFLICT DO NOTHING",
+                params![emp],
+            )
+            .await?;
+            db.execute(
+                "UPDATE leave_balances SET total_days = total_days + ?2
+                  WHERE employee_id=?1 AND leave_type='compensatory'",
+                params![emp, credited],
+            )
+            .await?;
+            log_balance(db, &emp, "compensatory", credited, "加班转入", "overtime", &id).await?;
+            db.execute(
+                "UPDATE overtime_requests SET status='approved', credited_days=?2, comment=?3, decided_at=?4 WHERE id=?1",
+                params![id, credited, s(a, &["comment"]), stamp],
+            )
+            .await?;
+            notify(
+                db,
+                &emp,
+                "加班已通过",
+                &format!("{date} 加班（{hours}h）已通过，转入调休 {credited} 天"),
+                "attendance",
+            )
+            .await?;
+            Ok(json!({
+                "ok": true, "overtime_id": id, "status": "approved",
+                "employee_id": emp, "work_date": date, "hours": hours,
+                "credited_days": credited, "step": step, "approver": approver,
+                "message": format!("加班单 {id}（{emp} {date} {hours}h）已通过，按 8h=1 天转入调休 {credited:.1} 天")
+            }))
+        }
+
+        "attendance.overtime.cancel" => {
+            let id = need(a, &["overtime_id", "overtimeId"], "overtime_id")?;
+            let row = db
+                .query_json(
+                    "SELECT employee_id, work_date, hours, credited_days, status
+                       FROM overtime_requests WHERE id=?1",
+                    params![id],
+                )
+                .await?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("加班单 {id} 不存在"))?;
+            let status = row["status"].as_str().unwrap_or("");
+            if status != "pending" {
+                bail!("加班单 {id} 当前状态是 {status}，只有待审批的可以撤销");
+            }
+            let emp = row["employee_id"].as_str().unwrap_or("").to_string();
+            let date = row["work_date"].as_str().unwrap_or("").to_string();
+            let credited = row["credited_days"].as_f64().unwrap_or(0.0);
+            db.execute(
+                "UPDATE overtime_requests SET status='cancelled', decided_at=?2 WHERE id=?1",
+                params![id, clock::local_datetime()],
+            )
+            .await?;
+            db.execute(
+                "UPDATE approval_flows SET status='cancelled'
+                  WHERE entity_type='overtime' AND entity_id=?1 AND status='pending'",
+                params![id],
+            )
+            .await?;
+            if credited > 0.0 {
+                db.execute(
+                    "UPDATE leave_balances SET total_days = GREATEST(0, total_days - ?2)
+                      WHERE employee_id=?1 AND leave_type='compensatory'",
+                    params![emp, credited],
+                )
+                .await?;
+                log_balance(db, &emp, "compensatory", -credited, "加班撤销回滚", "overtime", &id)
+                    .await?;
+            }
+            Ok(json!({
+                "ok": true, "overtime_id": id, "status": "cancelled",
+                "employee_id": emp, "work_date": date,
+                "message": format!("加班单 {id} 已撤销")
+            }))
+        }
+
         "attendance.report" => {
             let month = o(a, &["month"]).unwrap_or_else(|| month_now());
             let month = if month.is_empty() { month_now() } else { month };
@@ -1715,6 +2807,11 @@ async fn run_sql(name: &str, a: &Value, db: &mut dyn Repo) -> Result<Value> {
                    FROM attendance a JOIN employees e ON e.id=a.employee_id
                    LEFT JOIN departments d ON d.id=e.dept_id
                   WHERE substr(a.work_date,1,7)=?1 AND (?2 IS NULL OR e.dept_id=?2)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM attendance_exemptions x
+                       WHERE (x.scope='employee' AND x.target_id=e.id)
+                          OR (x.scope='department' AND x.target_id=e.dept_id)
+                    )
                   GROUP BY e.id, e.name, e.dept_id, d.name
                   ORDER BY late DESC, days DESC, e.id",
                 params![month, dept],
@@ -1992,7 +3089,7 @@ mod tests {
 
     #[test]
     fn specs_cover_every_registered_tool() {
-        assert_eq!(TOOL_SPECS.len(), 23);
+        assert_eq!(TOOL_SPECS.len(), 32);
         for (name, _, _, _) in TOOL_SPECS {
             assert!(domain::TOOL_NAMES.contains(name), "{name} missing from TOOL_NAMES");
             let schema = tool_schema(name);
@@ -2096,6 +3193,663 @@ mod tests {
         )
         .await;
         assert_eq!(own["ok"], true);
+    }
+
+    /// 配置打卡点后：缺定位拒绝、出范围拒绝、范围内成功并记录距离；未配置时不限制。
+    #[tokio::test]
+    async fn attendance_requires_location_within_configured_radius() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        // 未配置打卡点：保持原行为，不强制定位
+        let free = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "in", "time": "09:00" }),
+        )
+        .await;
+        assert_eq!(free["ok"], true);
+
+        // 上海人民广场，半径 2000 米
+        app.store
+            .set_attendance_sites(&[domain::AttendanceSite {
+                name: "总部".into(),
+                latitude: 31.2304,
+                longitude: 121.4737,
+                radius_m: 2000,
+                address: "上海市黄浦区人民广场".into(),
+            }])
+            .await
+            .unwrap();
+
+        // 缺定位：拒绝
+        let missing = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "out", "time": "18:00" }),
+        )
+        .await;
+        assert_eq!(missing["ok"], false);
+        assert!(missing["error"].as_str().unwrap().contains("定位"));
+
+        // 超出范围：纬度差 0.1° ≈ 11km
+        let far = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "out", "time": "18:00",
+                    "latitude": 31.3304, "longitude": 121.4737 }),
+        )
+        .await;
+        assert_eq!(far["ok"], false);
+        assert!(far["error"].as_str().unwrap().contains("不在打卡范围"));
+
+        // 范围内：距离约 14 米
+        let near = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "out", "time": "18:00",
+                    "latitude": 31.2305, "longitude": 121.4738 }),
+        )
+        .await;
+        assert_eq!(near["ok"], true, "near={near}");
+        assert!(near["distance_m"].as_i64().unwrap() < 30);
+    }
+
+    /// 多打卡点各自独立半径：命中任一点即可，distance_m 记录最近点距离。
+    #[tokio::test]
+    async fn attendance_sites_use_per_site_radius() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        // 总部半径 100 米；厂区在正北 1.1km，半径 3000 米
+        app.store
+            .set_attendance_sites(&[
+                domain::AttendanceSite {
+                    name: "总部".into(),
+                    latitude: 31.2304,
+                    longitude: 121.4737,
+                    radius_m: 100,
+                    address: String::new(),
+                },
+                domain::AttendanceSite {
+                    name: "厂区".into(),
+                    latitude: 31.2404,
+                    longitude: 121.4737,
+                    radius_m: 3000,
+                    address: String::new(),
+                },
+            ])
+            .await
+            .unwrap();
+
+        // 距总部约 556 米、距厂区约 1668 米：总部半径不足，但命中厂区
+        let near_factory = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "in", "time": "09:00",
+                    "latitude": 31.2254, "longitude": 121.4737 }),
+        )
+        .await;
+        assert_eq!(near_factory["ok"], true);
+        // distance_m 取最近点（总部）的距离，而不是结果更宽松的厂区
+        let d = near_factory["distance_m"].as_i64().unwrap();
+        assert!((500..600).contains(&d), "distance_m={d}");
+        // 成功消息点名实际命中的「厂区」，并给出到该点的距离
+        assert_eq!(near_factory["site_name"], "厂区");
+        let message = near_factory["message"].as_str().unwrap();
+        assert!(message.contains("「厂区」"), "message={message}");
+        // 前端 toast 读 msg，需与 message 同一段文案
+        let toast = near_factory["msg"].as_str().unwrap();
+        assert!(toast.contains("「厂区」"), "msg={toast}");
+
+        // 距总部约 3336 米、距厂区约 4448 米：两点半径都不够
+        let outside = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "out", "time": "18:00",
+                    "latitude": 31.2004, "longitude": 121.4737 }),
+        )
+        .await;
+        assert_eq!(outside["ok"], false);
+        assert!(outside["error"].as_str().unwrap().contains("总部"));
+    }
+
+    /// 请假：年假按工作日预占额度 → 逐级审批 → 末级写考勤；驳回/撤销回滚额度。
+    #[tokio::test]
+    async fn leave_flow_reserves_and_refunds_balance() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        let used_days = |app: &AppState| {
+            let app = app.clone();
+            async move {
+                app.store
+                    .query_json(
+                        "SELECT used_days FROM leave_balances
+                          WHERE employee_id='E03' AND leave_type='annual'",
+                        params![],
+                    )
+                    .await
+                    .unwrap()
+                    .first()
+                    .and_then(|r| r["used_days"].as_f64())
+                    .unwrap_or(-1.0)
+            }
+        };
+
+        // 初始额度 5 天，已用 0
+        assert_eq!(used_days(&app).await, 0.0);
+
+        // 周一、周二 2 个工作日
+        let created = call(
+            app.clone(),
+            &employee,
+            "attendance.leave",
+            json!({
+                "employee_id": "E03", "leave_type": "annual",
+                "start_date": "2026-12-07", "end_date": "2026-12-08",
+                "reason": "家庭事务"
+            }),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(created["days"], 2);
+        let leave_id = created["leave_id"].as_str().unwrap().to_string();
+        // 提交即预占
+        assert_eq!(used_days(&app).await, 2.0);
+
+        // 逐级审到末级
+        let mut last = call(
+            app.clone(),
+            &admin,
+            "attendance.leave.approve",
+            json!({ "leave_id": leave_id, "decision": "approve", "confirmed": true }),
+        )
+        .await;
+        for _ in 0..4 {
+            if last["status"] != "pending" {
+                break;
+            }
+            last = call(
+                app.clone(),
+                &admin,
+                "attendance.leave.approve",
+                json!({ "leave_id": leave_id, "decision": "approve", "confirmed": true }),
+            )
+            .await;
+        }
+        assert_eq!(last["status"], "approved", "{last}");
+
+        // 两个工作日都标记为 leave
+        let rows = app
+            .store
+            .query_json(
+                "SELECT work_date, status, source FROM attendance
+                  WHERE employee_id='E03' AND work_date BETWEEN '2026-12-07' AND '2026-12-08'
+                  ORDER BY work_date",
+                params![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|r| r["status"] == "leave" && r["source"] == "leave"));
+
+        // 通过后额度保持预占
+        assert_eq!(used_days(&app).await, 2.0);
+
+        // 同一区间不能再申请（与已通过的单重叠）
+        let overlap = call(
+            app.clone(),
+            &employee,
+            "attendance.leave",
+            json!({
+                "employee_id": "E03", "leave_type": "personal",
+                "start_date": "2026-12-08", "end_date": "2026-12-09"
+            }),
+        )
+        .await;
+        assert_eq!(overlap["ok"], false);
+
+        // 驳回回滚
+        let rejected = call(
+            app.clone(),
+            &employee,
+            "attendance.leave",
+            json!({
+                "employee_id": "E03", "leave_type": "annual",
+                "start_date": "2026-12-09", "end_date": "2026-12-09"
+            }),
+        )
+        .await;
+        let rejected_id = rejected["leave_id"].as_str().unwrap().to_string();
+        assert_eq!(used_days(&app).await, 3.0);
+        let rej = call(
+            app.clone(),
+            &admin,
+            "attendance.leave.approve",
+            json!({ "leave_id": rejected_id, "decision": "reject", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(rej["status"], "rejected");
+        assert_eq!(used_days(&app).await, 2.0);
+
+        // 撤销回滚
+        let cancelled = call(
+            app.clone(),
+            &employee,
+            "attendance.leave",
+            json!({
+                "employee_id": "E03", "leave_type": "annual",
+                "start_date": "2026-12-21", "end_date": "2026-12-21"
+            }),
+        )
+        .await;
+        let cancelled_id = cancelled["leave_id"].as_str().unwrap().to_string();
+        assert_eq!(used_days(&app).await, 3.0);
+        let cancel = call(
+            app.clone(),
+            &employee,
+            "attendance.leave.cancel",
+            json!({ "leave_id": cancelled_id }),
+        )
+        .await;
+        assert_eq!(cancel["status"], "cancelled");
+        assert_eq!(used_days(&app).await, 2.0);
+
+        // 员工不能撤销别人的单
+        let denied = call(
+            app.clone(),
+            &employee,
+            "attendance.leave.cancel",
+            json!({ "leave_id": "LV-2026-0001" }),
+        )
+        .await;
+        assert_eq!(denied["denied"], true);
+
+        // 余额不足：剩余 3 天，申请 5 天
+        let over = call(
+            app.clone(),
+            &employee,
+            "attendance.leave",
+            json!({
+                "employee_id": "E03", "leave_type": "annual",
+                "start_date": "2026-12-14", "end_date": "2026-12-18"
+            }),
+        )
+        .await;
+        assert_eq!(over["ok"], false, "{over}");
+        assert!(over["error"].as_str().unwrap().contains("余额不足"));
+    }
+
+    /// 加班：默认 18:00、跨天时长、逐级审批、按 8h=1 天转入调休并写流水。
+    #[tokio::test]
+    async fn overtime_flow_credits_comp_time() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        let comp_total = |app: &AppState| {
+            let app = app.clone();
+            async move {
+                app.store
+                    .query_json(
+                        "SELECT total_days FROM leave_balances
+                          WHERE employee_id='E03' AND leave_type='compensatory'",
+                        params![],
+                    )
+                    .await
+                    .unwrap()
+                    .first()
+                    .and_then(|r| r["total_days"].as_f64())
+                    .unwrap_or(-1.0)
+            }
+        };
+
+        assert_eq!(comp_total(&app).await, 2.0);
+
+        // 不传 start_time：默认 18:00
+        let created = call(
+            app.clone(),
+            &employee,
+            "attendance.overtime",
+            json!({
+                "employee_id": "E03", "work_date": "2026-12-05",
+                "end_time": "21:00", "reason": "版本发布"
+            }),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(created["start_time"], "18:00");
+        assert_eq!(created["hours"], 3.0);
+        let id = created["overtime_id"].as_str().unwrap().to_string();
+
+        // 3h ≤ 4h：一级审批
+        let mut last = call(
+            app.clone(),
+            &admin,
+            "attendance.overtime.approve",
+            json!({ "overtime_id": id, "decision": "approve", "confirmed": true }),
+        )
+        .await;
+        for _ in 0..4 {
+            if last["status"] != "pending" {
+                break;
+            }
+            last = call(
+                app.clone(),
+                &admin,
+                "attendance.overtime.approve",
+                json!({ "overtime_id": id, "decision": "approve", "confirmed": true }),
+            )
+            .await;
+        }
+        assert_eq!(last["status"], "approved", "{last}");
+
+        // 3h / 8h = 0.375 天
+        let after = comp_total(&app).await;
+        assert!((after - 2.375).abs() < 1e-9, "unexpected total: {after}");
+
+        // 流水里应有加班转入
+        let logs = app
+            .store
+            .query_json(
+                "SELECT delta_days, reason FROM leave_balance_logs
+                  WHERE employee_id='E03' AND ref_type='overtime' AND ref_id=?1",
+                params![id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["reason"], "加班转入");
+        assert!((logs[0]["delta_days"].as_f64().unwrap() - 0.375).abs() < 1e-9);
+
+        // 跨天 22:00 ~ 次日 02:00 = 4 小时；不超过 4h 仍是一级审批
+        let cross = call(
+            app.clone(),
+            &employee,
+            "attendance.overtime",
+            json!({
+                "employee_id": "E03", "work_date": "2026-12-06",
+                "start_time": "22:00", "end_time": "02:00"
+            }),
+        )
+        .await;
+        assert_eq!(cross["ok"], true, "{cross}");
+        assert_eq!(cross["hours"], 4.0);
+        assert_eq!(cross["chain"].as_array().unwrap().len(), 1);
+
+        // 撤销待审批的加班单：额度不变
+        let pending = call(
+            app.clone(),
+            &employee,
+            "attendance.overtime",
+            json!({
+                "employee_id": "E03", "work_date": "2026-12-07",
+                "start_time": "18:00", "end_time": "20:00"
+            }),
+        )
+        .await;
+        let pending_id = pending["overtime_id"].as_str().unwrap().to_string();
+        let cancelled = call(
+            app.clone(),
+            &employee,
+            "attendance.overtime.cancel",
+            json!({ "overtime_id": pending_id }),
+        )
+        .await;
+        assert_eq!(cancelled["status"], "cancelled");
+        assert!((comp_total(&app).await - 2.375).abs() < 1e-9);
+
+        // 员工不能为别人提加班
+        let denied = call(
+            app.clone(),
+            &employee,
+            "attendance.overtime",
+            json!({
+                "employee_id": "E04", "work_date": "2026-12-08",
+                "start_time": "18:00", "end_time": "21:00"
+            }),
+        )
+        .await;
+        assert_eq!(denied["denied"], true);
+    }
+
+    /// 外勤打卡：配置打卡点后仍可超出半径，状态记 field；普通打卡仍受范围限制。
+    #[tokio::test]
+    async fn field_checkin_bypasses_radius() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, employee) = app.store.login("lina", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        app.store
+            .set_attendance_sites(&[domain::AttendanceSite {
+                name: "总部".into(),
+                latitude: 31.2304,
+                longitude: 121.4737,
+                radius_m: 2000,
+                address: "上海市黄浦区人民广场".into(),
+            }])
+            .await
+            .unwrap();
+
+        // 普通打卡超出 2km → 拒绝
+        let far = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({
+                "employee_id": "E03", "type": "in", "time": "09:00",
+                "latitude": 31.4, "longitude": 121.5
+            }),
+        )
+        .await;
+        assert_eq!(far["ok"], false);
+        assert!(far["error"].as_str().unwrap().contains("不在打卡范围"));
+
+        // 外勤打卡超出 2km → 允许，状态 field
+        let field = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({
+                "employee_id": "E03", "type": "in", "time": "09:00",
+                "latitude": 31.4, "longitude": 121.5, "field": true, "note": "客户现场"
+            }),
+        )
+        .await;
+        assert_eq!(field["ok"], true, "{field}");
+        assert_eq!(field["status"], "field");
+        assert_eq!(field["note"], "客户现场");
+
+        // 外勤允许没有定位
+        let no_loc = call(
+            app.clone(),
+            &employee,
+            "attendance.checkin",
+            json!({ "employee_id": "E03", "type": "out", "time": "18:00", "field": true }),
+        )
+        .await;
+        assert_eq!(no_loc["ok"], true, "{no_loc}");
+        assert_eq!(no_loc["status"], "field");
+    }
+
+    /// 补卡配额：员工级覆盖 0 次时拒绝；调回 3 次后可提交并返回剩余次数。
+    #[tokio::test]
+    async fn makeup_quota_can_be_overridden_per_employee() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        assert_eq!(app.store.makeup_quota_default().await.unwrap(), 3);
+
+        // E06 覆盖为 0 次
+        let set = call(
+            app.clone(),
+            &admin,
+            "hr.makeup.quota",
+            json!({ "employee_id": "E06", "quota": 0 }),
+        )
+        .await;
+        assert_eq!(set["ok"], true);
+        assert_eq!(set["scope"], "employee");
+
+        let denied = call(
+            app.clone(),
+            &admin,
+            "attendance.makeup",
+            json!({ "employee_id": "E06", "date": today(), "reason": "忘记打卡" }),
+        )
+        .await;
+        assert_eq!(denied["ok"], false, "{denied}");
+        assert!(denied["error"].as_str().unwrap().contains("补卡次数"));
+
+        // 调回 3 次后可以提交
+        call(
+            app.clone(),
+            &admin,
+            "hr.makeup.quota",
+            json!({ "employee_id": "E06", "quota": 3 }),
+        )
+        .await;
+        let ok = call(
+            app.clone(),
+            &admin,
+            "attendance.makeup",
+            json!({ "employee_id": "E06", "date": today(), "reason": "忘记打卡" }),
+        )
+        .await;
+        assert_eq!(ok["ok"], true, "{ok}");
+        assert_eq!(ok["quota"], 3);
+        assert_eq!(ok["remaining"], 2);
+
+        // 全局分支
+        let global = call(
+            app.clone(),
+            &admin,
+            "hr.makeup.quota",
+            json!({ "quota": 5 }),
+        )
+        .await;
+        assert_eq!(global["scope"], "global");
+        assert_eq!(global["quota"], 5);
+        assert_eq!(app.store.makeup_quota_default().await.unwrap(), 5);
+    }
+
+    /// 考勤时间可配置；免考勤员工打卡不判迟到，且从月度报表中排除。
+    #[tokio::test]
+    async fn attendance_policy_and_exemptions_apply() {
+        let app = AppState::new(crate::test_support::test_store().await);
+        let (_, admin) = app.store.login("evan", crate::auth::DEFAULT_PASSWORD).await.unwrap();
+
+        // 默认 09:00 - 18:00、午休 60 分钟
+        let policy = app.store.attendance_policy().await.unwrap();
+        assert_eq!(policy.work_start, "09:00");
+        assert_eq!(policy.work_end, "18:00");
+        assert_eq!(policy.lunch_minutes, 60);
+
+        // 改为 10:00 - 19:00
+        app.store
+            .set_attendance_policy(&domain::AttendancePolicy {
+                work_start: "10:00".into(),
+                work_end: "19:00".into(),
+                lunch_minutes: 60,
+            })
+            .await
+            .unwrap();
+
+        // E09 当天没有考勤记录：09:30 上班不再迟到
+        let early = call(
+            app.clone(),
+            &admin,
+            "attendance.checkin",
+            json!({ "employee_id": "E09", "type": "in", "time": "09:30" }),
+        )
+        .await;
+        assert_eq!(early["ok"], true);
+        assert_eq!(early["status"], "normal");
+
+        // 10:30 上班 → 迟到
+        let late = call(
+            app.clone(),
+            &admin,
+            "attendance.checkin",
+            json!({ "employee_id": "E09", "type": "in", "time": "10:30" }),
+        )
+        .await;
+        assert_eq!(late["status"], "late");
+
+        // seed 已把 E16 设为免考勤：10:30 打卡仍记 normal
+        assert!(app.store.is_attendance_exempt("E16").await.unwrap());
+        let exempt_check = call(
+            app.clone(),
+            &admin,
+            "attendance.checkin",
+            json!({ "employee_id": "E16", "type": "in", "time": "10:30" }),
+        )
+        .await;
+        assert_eq!(exempt_check["ok"], true);
+        assert_eq!(exempt_check["exempt"], true);
+        assert_eq!(exempt_check["status"], "normal");
+
+        let month = crate::clock::local_month();
+        let report = call(
+            app.clone(),
+            &admin,
+            "attendance.report",
+            json!({ "month": month.clone() }),
+        )
+        .await;
+        let ids: Vec<String> = report["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["employee_id"].as_str().map(str::to_string))
+            .collect();
+        assert!(!ids.contains(&"E16".to_string()), "E16 应被排除: {report}");
+
+        // 移除豁免后 E16 重新进入报表
+        let removed = call(
+            app.clone(),
+            &admin,
+            "hr.attendance.exempt",
+            json!({ "scope": "employee", "target_id": "E16", "exempt": false }),
+        )
+        .await;
+        assert_eq!(removed["ok"], true);
+        assert!(!app.store.is_attendance_exempt("E16").await.unwrap());
+
+        let report2 = call(
+            app.clone(),
+            &admin,
+            "attendance.report",
+            json!({ "month": month }),
+        )
+        .await;
+        let ids2: Vec<String> = report2["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["employee_id"].as_str().map(str::to_string))
+            .collect();
+        assert!(ids2.contains(&"E16".to_string()), "E16 应重新出现: {report2}");
+
+        // 部门级豁免也能命中
+        let dept = call(
+            app.clone(),
+            &admin,
+            "hr.attendance.exempt",
+            json!({ "scope": "department", "target_id": "D02" }),
+        )
+        .await;
+        assert_eq!(dept["ok"], true);
+        assert!(app.store.is_attendance_exempt("E16").await.unwrap());
     }
 
     /// 1.5 万元报销 → 两级审批（直属主管 E02 → 财务经理 E10），逐级推进而不是一次批完。
@@ -2763,5 +4517,67 @@ mod tests {
         )
         .await;
         assert_eq!(s3["status"], "approved", "{s3}");
+    }
+
+    fn user_of(role: &str, id: &str) -> SessionUser {
+        SessionUser {
+            employee_id: id.into(),
+            username: id.to_lowercase(),
+            display_name: id.into(),
+            role: role.into(),
+            permissions: vec![],
+        }
+    }
+
+    /// 花名册：非 HR / 管理员只能看到本人薪资，其他人的薪资与邮箱脱敏。
+    #[test]
+    fn roster_output_masks_salary_for_non_hr() {
+        let mut out = json!({
+            "rows": [
+                { "id": "E03", "name": "李娜", "salary_cents": 1_800_000, "email": "lina@x.com" },
+                { "id": "E02", "name": "陈立", "salary_cents": 2_600_000, "email": "chenli@x.com" },
+            ]
+        });
+        scope_output(&user_of("employee", "E03"), "hr.roster.query", &mut out);
+        assert_eq!(out["rows"][0]["salary_cents"], 1_800_000, "本人应可见");
+        assert_eq!(out["rows"][0]["email"], "lina@x.com");
+        assert_eq!(out["rows"][1]["salary_cents"], 0, "{out}");
+        assert!(out["rows"][1]["email"].is_null(), "{out}");
+
+        let mut hr_out = json!({ "rows": [{ "id": "E02", "salary_cents": 2_600_000 }] });
+        scope_output(&user_of("hr", "E12"), "hr.roster.query", &mut hr_out);
+        assert_eq!(hr_out["rows"][0]["salary_cents"], 2_600_000, "HR 不脱敏");
+    }
+
+    /// 合同：非财务/经理只能看到本人合同，计数与文案同步收敛。
+    #[test]
+    fn contract_output_limited_to_own_for_non_finance() {
+        let payload = || {
+            json!({
+                "ok": true, "count": 2, "expiring_in_days": 30, "expiring_count": 2,
+                "rows": [
+                    { "id": "C1", "owner_id": "E03", "amount_cents": 100 },
+                    { "id": "C2", "owner_id": "E02", "amount_cents": 200 },
+                ],
+                "expiring": [
+                    { "id": "C1", "owner_id": "E03" },
+                    { "id": "C2", "owner_id": "E02" },
+                ],
+                "message": "命中 2 份合同，其中 30 天内到期 2 份",
+            })
+        };
+
+        let mut own = payload();
+        scope_output(&user_of("employee", "E03"), "contract.query", &mut own);
+        assert_eq!(own["count"], 1, "{own}");
+        assert_eq!(own["expiring_count"], 1, "{own}");
+        assert_eq!(own["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(own["rows"][0]["id"], "C1");
+        assert!(own["message"].as_str().unwrap().contains("命中 1 份合同"));
+
+        let mut all = payload();
+        scope_output(&user_of("finance", "E10"), "contract.query", &mut all);
+        assert_eq!(all["count"], 2, "财务看全量");
+        assert_eq!(all["rows"].as_array().unwrap().len(), 2);
     }
 }

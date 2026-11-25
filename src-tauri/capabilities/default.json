@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "updater:default"
+    "updater:default",
+    "geolocation:allow-check-permissions",
+    "geolocation:allow-request-permissions",
+    "geolocation:allow-get-current-position"
   ]
 }

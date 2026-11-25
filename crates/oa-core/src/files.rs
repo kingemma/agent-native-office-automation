@@ -155,8 +155,10 @@ fn can_access(user: &SessionUser, entity_type: &str, owner: &str) -> bool {
     match entity_type {
         // 本人单据可传可看；财务/经理范围可管理全部报销单附件
         "claim" => finance_scope(user) || owner == user.employee_id,
-        // 合同只对能建合同的人开放（与 contract.create 的 RBAC 一致）
-        _ => user.can("contract.create"),
+        // 合同附件与合同台账同口径：仅财务/经理（可建合同的人）可访问
+        "contract" => finance_scope(user),
+        // 未知归属一律拒绝（fail-closed）
+        _ => false,
     }
 }
 

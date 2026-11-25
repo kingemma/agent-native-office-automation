@@ -1,7 +1,7 @@
 # 驭工 OA · Agent-Native Office Automation
 
 用自然语言驱动全部办公流程的 OA 系统：人事、财务、合同、考勤、资产五大业务域共用
-23 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（Postgres）并写审计。
+32 个强类型工具，Agent 与表单走同一条写入通道，所有变更落库（Postgres）并写审计。
 
 - **前端**：Vue 3 + TypeScript + Ant Design Vue 4 + vue-i18n + Pinia
 - **后端**：Rust 1.97+ · Axum 0.8 · Rig 0.46（LLM 编排）· sqlx 0.8（Postgres）
@@ -23,14 +23,14 @@
 |---|---|
 | ![人事管理](docs/screenshots/hr.png) | ![财务管理](docs/screenshots/finance.png) |
 
-**系统架构**：技术选型、分层架构与 23 个工具的协议一览。
+**系统架构**：技术选型、分层架构与 32 个工具的协议一览。
 
 ![系统架构](docs/screenshots/architecture.png)
 
 ## 目录结构
 
 ```
-crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 23 个 Tool · 意图引擎
+crates/oa-core        领域模型 · 状态机 · 异步 Store（sqlx）· 认证/RBAC · 32 个 Tool · 意图引擎
 crates/oa-server      Axum REST 服务（认证、Agent、工具、台账、指标、审计、重置）
 src-tauri             Tauri 2.0 薄客户端外壳（窗口/系统集成，业务全部走 REST）
 frontend              生产前端（Vue 3 SFC + Vite），唯一前端事实来源
@@ -148,6 +148,27 @@ pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当�
 `pwsh -File ./tools/tauri.ps1 android dev` / `android build`；真机调试时 Tauri 会注入
 `TAURI_DEV_HOST`，Vite 自动监听局域网地址。
 
+#### 打卡定位（需一次移动工程初始化）
+
+定位代码、插件与前端权限均已接好；`src-tauri/gen/android|ios` 尚未生成，需在工具链齐全的机器上执行一次：
+
+| 平台 | 前置 | 初始化命令 | 初始化后 |
+|---|---|---|---|
+| Android | JDK 17 + Android SDK Platform 33+ + NDK | `pwsh -File ./tools/tauri.ps1 android init` | 在 `src-tauri/gen/android/app/src/main/AndroidManifest.xml` 的 `<manifest>` 内加下方权限 |
+| iOS | macOS + Xcode | `pwsh -File ./tools/tauri.ps1 ios init` | 无需改文件，`src-tauri/Info.plist` 自动合并 |
+
+AndroidManifest 需要追加：
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+```
+
+- 插件已在 `src-tauri/src/lib.rs` 注册；capabilities 已放行
+  `geolocation:allow-check-permissions` / `allow-request-permissions` / `allow-get-current-position`；
+- iOS 用途说明已写在 `src-tauri/Info.plist`（`NSLocationWhenInUseUsageDescription`）；
+- 浏览器（H5）只在 HTTPS 或 localhost 下允许定位；局域网 HTTP 会提示改用 HTTPS 或 Tauri 客户端。
+
 ### 4. 客户端地址配置（局域网优先）
 
 登录页「服务器地址」可折叠面板里配置两套地址，保存在本机 localStorage：
@@ -175,7 +196,7 @@ pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当�
 
 | 用户名 | 员工 | 角色 | 典型权限 |
 |---|---|---|---|
-| `evan` | E01 周明远 | admin | 全部 23 个工具 |
+| `evan` | E01 周明远 | admin | 全部 32 个工具 |
 | `wuhao` | E10 吴昊 | finance | 报销审批/汇总、合同创建、考勤报表 |
 | `fengxue` | E12 冯雪 | hr | 入职/离职/晋升、资产登记/领用、考勤报表 |
 | `chenli` | E02 陈立 | manager | 报销审批、领用/归还、合同创建、团队数据 |
@@ -184,9 +205,13 @@ pwsh -File ./tools/tauri.ps1 build               # 前端 build + release + 当�
 RBAC 在服务端执行（`crates/oa-core/src/auth.rs` 的 `can_use` 矩阵），前端只做 UI 隐藏；
 客户端直调 HTTP 无法绕过。被拒绝的调用同样写审计。
 
+数据范围同样在服务端裁剪：薪资与邮箱仅 admin/HR 可见（其他人只能看到本人），
+合同金额与对方主体仅财务/经理可见（其他人只能看到本人合同），人力成本与预算仅财务/经理/管理员可见；
+普通员工的台账接口只返回本人相关行。
+
 ## Agent 运行模式
 
-通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 23 个工具、RBAC 与审计：
+通过 `OA_AGENT_MODE` 控制，三种取值共用同一套 32 个工具、RBAC 与审计：
 
 | 值 | 行为 |
 |---|---|
@@ -213,13 +238,13 @@ Agent 返回 `needs_confirmation` + `pending`，前端确认后带 `confirmed=tr
 | POST | `/api/auth/change-password` | 改密并吊销该账号全部会话 |
 | POST | `/api/agent/chat` | Agent 对话（回复 + 模式 + 轨迹 + 待确认步骤） |
 | POST | `/api/agent/plan` | 计划预览（不写库） |
-| GET | `/api/tools` | 23 个工具及当前角色 `allowed` |
+| GET | `/api/tools` | 32 个工具及当前角色 `allowed` |
 | POST | `/api/tools/call` | 单工具直调（表单写操作统一入口） |
 | POST | `/api/files` | 上传附件/发票图片（base64，`entity_type=claim|contract`） |
 | GET | `/api/files?entity_type=&entity_id=` | 附件列表（按单据） |
 | GET | `/api/files/{id}` | 读取附件内容（返回 data URL） |
 | DELETE | `/api/files/{id}` | 删除附件（上传者或管理员） |
-| GET | `/api/tables/{name}` | 只读台账（表名白名单，共 15 张） |
+| GET | `/api/tables/{name}` | 只读台账（表名白名单，共 21 张） |
 | GET | `/api/metrics` | 工作台 KPI + 近 6 月趋势 |
 | GET | `/api/audit?limit=` | 审计日志 |
 | POST | `/api/seed/reset` | 重置演示数据（管理员；账号保留） |
@@ -280,21 +305,40 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 ## 考勤
 
 - 打卡：上班 / 下班各一条，按 09:00 / 17:30 判定迟到早退，工时扣 1 小时午休；
+- 定位打卡：管理员在「设置 → 打卡设置」里维护多个打卡点（名称 / 地址 / 经纬度），
+  每个点独立配置允许范围（默认 2000 米，适合总部大楼与厂区范围不同）；
+  配置后员工打卡必须先获得定位授权并上传坐标，命中任一点范围即可通过，都不命中直接拒绝，
+  坐标与最近点距离随考勤落库（`latitude` / `longitude` / `distance_m`）；
+  未配置打卡点时不限制位置，旧版单点 `attendance.site` 配置自动兼容；
+- 请假：12 类钉钉口径的请假类型（年假/事假/病假/调休/婚假/产假/陪产假/丧假/哺乳假/工伤假/路途假/其他）；
+  年假与调休按**工作日**（周一至周五）预占额度，提交即扣减，驳回或撤销回滚；
+  ≤3 天走「直属主管 → 部门总监」，>3 天追加 HRBP；末级通过后把区间内工作日写成 `attendance.status='leave'`，
+  区间内已有正常打卡会拒绝通过，避免覆盖真实出勤；HR/管理员可通过 `hr.leave.balance.set` 维护额度；
+- 加班：默认 18:00 开始（不传 `start_time` 即按 18:00），`end <= start` 视为跨天（如 22:00 ~ 02:00 = 4h）；
+  ≤4 小时走直属主管，>4 小时追加部门总监；末级通过后按 **8 小时 = 1 天**转入调休总额度，
+  每次额度变动（加班转入、请假预占/回滚、HR 调整）都写 `leave_balance_logs` 流水，便于对账；
+- 外勤打卡：打卡卡片勾选「外勤」后提交，允许超出打卡点范围、也允许没有定位；状态记 `field`，
+  事由写 `attendance.note`，有定位时仍记录坐标与距离；
+- 补卡次数：默认每月 3 次，管理员可在「设置 → 打卡设置」改全局默认，或给单个员工单独设置；
+  待审批与已通过占用次数，驳回/撤销不占用（机会返还），下月自动重置；
+- 考勤时间：默认 **09:00 - 18:00**、午休 60 分钟；管理员可在「设置 → 考勤规则」调整上下班与午休，
+  改完立即生效，打卡判定与补卡通过后的考勤都按新规则计算；
+- 免考勤：管理员可按**员工**或**部门**设置免考勤；命中者打卡不判迟到/早退，也不参与月度出勤统计；
 - 补卡：只创建 `makeup_requests` 与审批流（审批人 = 直属主管，存员工号），**审批通过后才写入 `attendance`**，
   驳回不写；同一人同一天只允许一条待审批，补未来日期直接拒绝；
 - 月度报表：`attendance.report` 与考勤页同一口径，按人汇总出勤天数 / 正常 / 迟到 / 早退 / 缺卡 / 外勤 / 请假 / 工时 / 出勤率
   （出勤率 =（正常 + 外勤）/ 出勤天数），并返回待审批补卡数；
 - 行级可见性：普通员工只看本人考勤与本人补卡，HR / 财务 / 经理可看全员。
 
-## 23 个工具
+## 32 个工具
 
 | 域 | 工具 |
 |---|---|
-| 人事 | `hr.onboard` `hr.offboard` `hr.promote` `hr.approve` `hr.roster.query` |
+| 人事 | `hr.onboard` `hr.offboard` `hr.promote` `hr.approve` `hr.roster.query` `hr.leave.balance.set` `hr.makeup.quota` `hr.attendance.exempt` |
 | 组织 | `org.chart` |
 | 财务 | `finance.claim.create` `finance.claim.approve` `finance.summary` |
 | 合同 | `contract.create` `contract.approve` `contract.query` |
-| 考勤 | `attendance.checkin` `attendance.makeup` `attendance.approve` `attendance.report` |
+| 考勤 | `attendance.checkin` `attendance.makeup` `attendance.approve` `attendance.report` `attendance.leave` `attendance.leave.approve` `attendance.leave.cancel` `attendance.overtime` `attendance.overtime.approve` `attendance.overtime.cancel` |
 | 资产 | `asset.register` `asset.assign` `asset.return` `asset.query` |
 | 自定义字段 | `custom.field.define` `custom.field.list` `custom.field.remove` |
 
@@ -302,11 +346,17 @@ Tauri 外壳内没有任何业务命令；服务端地址由登录页配置、�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `OA_DB` | `postgresql://oa:oa@127.0.0.1:5432/oa` | 唯一数据源：Postgres 连接串（`postgres://` / `postgresql://`），非该格式会直接启动失败；密码含特殊字符需 URL 编码 |
+| `OA_DB` | — | 唯一数据源：Postgres 连接串（`postgres://` / `postgresql://`），非该格式会直接启动失败；设置后优先于下面的 `OA_DB_*` |
+| `OA_DB_HOST` | `127.0.0.1` | 数据库主机（未设 `OA_DB` 时生效） |
+| `OA_DB_PORT` | `5432` | 数据库端口 |
+| `OA_DB_NAME` | `oa` | 数据库名 |
+| `OA_DB_USER` | `oa` | 数据库账号 |
+| `OA_DB_PASSWORD` | `oa` | 数据库密码；连接参数分开传递，含 `@ : / ? #` 等字符无需 URL 编码 |
 | `OA_ADDR` | `0.0.0.0:8787` | 监听地址；仅本机访问请设为 `127.0.0.1:8787` |
 | `OA_FILES` | `oa-files` | 附件落盘目录（仅服务端使用，多实例部署需共享卷） |
 | `OA_INSTANCE` | `local` | `/api/health` 返回的实例标识，便于确认请求落到哪个副本 |
 | `OA_PG_POOL` | `10` | Postgres 连接池上限 |
+| `OA_CORS_ORIGINS` | — | 逗号分隔的跨域白名单（如 `https://oa.example.com,tauri://localhost`）；不设置则放开所有来源 |
 | `OA_AGENT_MODE` | `auto` | `auto` / `local` / `llm` |
 | `OA_MODEL` | `gpt-4o-mini` | 模型名 |
 | `OPENAI_API_KEY` | — | 未设置时自动走本地引擎 |
@@ -393,18 +443,22 @@ pwsh -NoProfile -File .\tools\make-updater-json.ps1 -Version v0.2.0
 **Linux · Docker（推荐）**
 
 ```bash
-cp .env.example .env          # 按需修改数据库账号密码
+cp .env.example .env          # 按需修改数据库账号、密码、端口
 docker compose up -d --build
 ```
 
 Compose 会拉起 `postgres:16-alpine` 与服务端，分别用命名卷 `oa-data`（数据库）和
-`oa-files`（附件）持久化，并等 Postgres 健康后再启动服务端。访问 `http://localhost:8787`。
-密码含 `@ : / ? #` 等特殊字符时，`.env` 中的连接串需做 URL 编码。
+`oa-files`（附件）持久化，并等 Postgres 健康后再启动服务端。访问 `http://localhost:8787`
+（宿主机端口由 `.env` 的 `OA_HOST_PORT` 控制；数据库端口由 `POSTGRES_PORT` 控制，
+容器监听、服务端连接与健康检查同步跟随）。`.env` 里的密码含 `@ : / ? #` 等字符也能直接用——
+Compose 把 `OA_DB_HOST/PORT/NAME/USER/PASSWORD` 分开传给服务端，不拼连接串；只有 `$` 需写成 `$$`，
+因为 Compose 会对 `.env` 的值再做一次插值。
 
 **Linux · systemd（裸机）**
 
 先准备 Postgres 实例与 `oa` 库/账号，并按实际账号密码修改 `deploy/oa-server.service`
-里的 `OA_DB`（密码含特殊字符需 URL 编码）；单元测试也依赖 Docker 起 Postgres 容器。
+里的连接配置（推荐 `Environment=OA_DB_HOST/OA_DB_PORT/OA_DB_NAME/OA_DB_USER/OA_DB_PASSWORD`，
+密码含特殊字符也不用转义）；单元测试也依赖 Docker 起 Postgres 容器。
 
 ```bash
 sudo useradd --system --home /opt/oa oa

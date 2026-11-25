@@ -1,7 +1,7 @@
 //! 存储层 · Postgres（服务端唯一数据库）
 //!
 //! 设计要点：
-//! - 15 张业务表（含附件元数据）+ users/sessions + counters，覆盖 6 大域与认证审计；
+//! - 21 张业务表（含附件元数据、请假/加班、额度与流水、补卡配额、免考勤）+ users/sessions + counters，覆盖 6 大域与认证审计；
 //! - `open_uri` 自动建表、灌入幂等 seed、初始化演示账号；
 //! - 金额统一「分」，日期统一 `YYYY-MM-DD`；业务日期在 Rust 侧按本地时区计算，
 //!   SQL 不再出现 `date('now')/strftime()`；
@@ -16,7 +16,7 @@ use crate::domain;
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -58,13 +58,55 @@ CREATE TABLE IF NOT EXISTS contracts (
 );
 CREATE TABLE IF NOT EXISTS attendance (
   id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, work_date TEXT NOT NULL,
-  clock_in TEXT, clock_out TEXT, status TEXT, source TEXT,
+  clock_in TEXT, clock_out TEXT, status TEXT, source TEXT, note TEXT,
   hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+  latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, distance_m BIGINT,
   UNIQUE(employee_id, work_date)
+);
+-- 员工级补卡配额覆盖：没有记录时用全局默认（settings.attendance.makeup_quota）
+CREATE TABLE IF NOT EXISTS attendance_quotas (
+  employee_id TEXT PRIMARY KEY, makeup_quota BIGINT NOT NULL
+);
+-- 免考勤：scope='employee' 按员工，'department' 按部门；命中者不参与出勤统计
+CREATE TABLE IF NOT EXISTS attendance_exemptions (
+  scope TEXT NOT NULL, target_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS')),
+  PRIMARY KEY(scope, target_id)
 );
 CREATE TABLE IF NOT EXISTS makeup_requests (
   id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, work_date TEXT NOT NULL,
   clock_in TEXT, clock_out TEXT, reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', approver_id TEXT, comment TEXT, decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, leave_type TEXT NOT NULL,
+  start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+  days DOUBLE PRECISION NOT NULL DEFAULT 0,
+  deducted_days DOUBLE PRECISION NOT NULL DEFAULT 0,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', approver_id TEXT, comment TEXT, decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE TABLE IF NOT EXISTS leave_balances (
+  employee_id TEXT NOT NULL, leave_type TEXT NOT NULL,
+  total_days DOUBLE PRECISION NOT NULL DEFAULT 0,
+  used_days DOUBLE PRECISION NOT NULL DEFAULT 0,
+  PRIMARY KEY(employee_id, leave_type)
+);
+-- 额度流水：加班转调休、请假预占/回滚、HR 调整都留一条，便于对账
+CREATE TABLE IF NOT EXISTS leave_balance_logs (
+  id BIGSERIAL PRIMARY KEY, employee_id TEXT NOT NULL, leave_type TEXT NOT NULL,
+  delta_days DOUBLE PRECISION NOT NULL, reason TEXT NOT NULL,
+  ref_type TEXT, ref_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE TABLE IF NOT EXISTS overtime_requests (
+  id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, work_date TEXT NOT NULL,
+  start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+  hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+  credited_days DOUBLE PRECISION NOT NULL DEFAULT 0,
+  reason TEXT,
   status TEXT NOT NULL DEFAULT 'pending', approver_id TEXT, comment TEXT, decided_at TEXT,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
 );
@@ -151,6 +193,9 @@ CREATE INDEX IF NOT EXISTS idx_claims_date ON claims(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_contract_expire ON contracts(expire_date);
 CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(work_date);
 CREATE INDEX IF NOT EXISTS idx_makeup_emp ON makeup_requests(employee_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_leave_emp ON leave_requests(employee_id, start_date);
+CREATE INDEX IF NOT EXISTS idx_overtime_emp ON overtime_requests(employee_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_balance_log_emp ON leave_balance_logs(employee_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_asset_status ON assets(status);
 CREATE INDEX IF NOT EXISTS idx_attach_entity ON attachments(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_events(tool);
@@ -175,6 +220,12 @@ INSERT OR IGNORE INTO claim_items(id,claim_id,category,amount_cents,occurred_on,
 const COLUMN_MIGRATIONS: &[(&str, &str, &str)] = &[
     // 审批时间：多级审批逐级流转后，时间线需要区分「节点创建」与「实际审批」
     ("approval_flows", "acted_at", "TEXT"),
+    // 外勤打卡事由：与 status='field' 配合，说明为什么不在打卡点
+    ("attendance", "note", "TEXT"),
+    // 打卡定位：留下坐标和到打卡点的距离，范围争议时可回溯
+    ("attendance", "latitude", "DOUBLE PRECISION"),
+    ("attendance", "longitude", "DOUBLE PRECISION"),
+    ("attendance", "distance_m", "BIGINT"),
 ];
 
 /// 数据迁移：多级审批改造前，`approval_flows.approver` 存的是「角色 姓名」，
@@ -267,6 +318,25 @@ INSERT OR IGNORE INTO attendance(id,employee_id,work_date,clock_in,clock_out,sta
 INSERT OR IGNORE INTO makeup_requests(id,employee_id,work_date,clock_in,clock_out,reason,status,approver_id) VALUES
  ('MK-2026-0001','E03',date('now','-1 day'),'09:00','18:00','客户现场演示，忘记打卡','pending','E02');
 
+-- 演示：E05 单独放宽到每月 5 次补卡
+INSERT OR IGNORE INTO attendance_quotas(employee_id,makeup_quota) VALUES ('E05',5);
+-- 演示：E16（架构师）不参与考勤
+INSERT OR IGNORE INTO attendance_exemptions(scope,target_id) VALUES ('employee','E16');
+
+INSERT OR IGNORE INTO leave_balances(employee_id, leave_type, total_days, used_days)
+ SELECT id, 'annual', 5, 0 FROM employees;
+INSERT OR IGNORE INTO leave_balances(employee_id, leave_type, total_days, used_days)
+ SELECT id, 'compensatory', 2, 0 FROM employees;
+
+INSERT OR IGNORE INTO leave_requests(id,employee_id,leave_type,start_date,end_date,days,deducted_days,reason,status,approver_id) VALUES
+ ('LV-2026-0001','E05','annual',date('now','+7 day'),date('now','+8 day'),2,2,'家庭事务','pending','E02');
+UPDATE leave_balances SET used_days=2 WHERE employee_id='E05' AND leave_type='annual';
+INSERT OR IGNORE INTO leave_balance_logs(employee_id,leave_type,delta_days,reason,ref_type,ref_id) VALUES
+ ('E05','annual',-2,'请假预占','leave','LV-2026-0001');
+
+INSERT OR IGNORE INTO overtime_requests(id,employee_id,work_date,start_time,end_time,hours,credited_days,reason,status,approver_id) VALUES
+ ('OT-2026-0001','E03',date('now','-1 day'),'18:00','21:00',3,0,'版本发布值守','pending','E02');
+
 INSERT OR IGNORE INTO assets(id,category,model,serial_no,status,holder_id,location,price_cents,qr_code,purchased_at) VALUES
  ('AST-0001','laptop','ThinkPad X1 Carbon Gen12','PF4A2B9C','inuse','E02','研发中心 A 区',1480000,'OA-AST-0001','2025-04-12'),
  ('AST-0002','laptop','MacBook Pro 14 M4','C02ZQ8K1','inuse','E16','研发中心 A 区',1899900,'OA-AST-0002','2025-08-03'),
@@ -322,7 +392,11 @@ INSERT OR IGNORE INTO audit_events(tool,actor,payload,result) VALUES
 const RESET_SQL: &str = r#"
 DELETE FROM audit_events; DELETE FROM notifications; DELETE FROM asset_events;
 DELETE FROM payments; DELETE FROM approval_flows; DELETE FROM budgets; DELETE FROM attachments;
-DELETE FROM assets; DELETE FROM makeup_requests; DELETE FROM attendance; DELETE FROM contracts;
+DELETE FROM assets; DELETE FROM makeup_requests; DELETE FROM attendance_quotas;
+DELETE FROM attendance_exemptions;
+DELETE FROM attendance; DELETE FROM contracts;
+DELETE FROM leave_requests; DELETE FROM leave_balances; DELETE FROM leave_balance_logs;
+DELETE FROM overtime_requests;
 DELETE FROM claims; DELETE FROM hr_cases; DELETE FROM employees; DELETE FROM departments;
 DELETE FROM counters;
 "#;
@@ -353,6 +427,47 @@ impl Store {
             .connect(url)
             .await
             .context("connect postgres")?;
+        let store = Self(pool);
+        store.init().await?;
+        Ok(store)
+    }
+
+    /// 用分解后的参数连接：密码原样交给驱动，含 `@ : / ? #` 等字符也无需 URL 编码。
+    ///
+    /// 连接串只做解析会把这些字符当成语法，所以部署侧（compose / systemd）优先走这条路径。
+    pub async fn open_parts(
+        host: &str,
+        port: u16,
+        database: &str,
+        user: &str,
+        password: &str,
+    ) -> Result<Self> {
+        let options = PgConnectOptions::new()
+            .host(host)
+            .port(port)
+            .database(database)
+            .username(user)
+            .password(password);
+        Self::connect_with(options).await
+    }
+
+    async fn connect_with(options: PgConnectOptions) -> Result<Self> {
+        let size: u32 = std::env::var("OA_PG_POOL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+        let target = format!(
+            "{}:{}/{}",
+            options.get_host(),
+            options.get_port(),
+            options.get_database().unwrap_or("")
+        );
+        let pool = PgPoolOptions::new()
+            .max_connections(size)
+            .acquire_timeout(Duration::from_secs(10))
+            .connect_with(options)
+            .await
+            .with_context(|| format!("连接 Postgres 失败：{target}"))?;
         let store = Self(pool);
         store.init().await?;
         Ok(store)
@@ -470,6 +585,143 @@ impl Store {
         self.execute("DELETE FROM settings WHERE key = ?1", params![key])
             .await?;
         Ok(())
+    }
+
+    /// 打卡点列表：管理员在设置页维护；未配置时返回空列表，打卡不做位置限制。
+    ///
+    /// 优先读 `attendance.sites`（数组），并兼容旧版单点 `attendance.site`，
+    /// 下次保存后自动迁移到新 key。
+    pub async fn attendance_sites(&self) -> Result<Vec<domain::AttendanceSite>> {
+        if let Some(raw) = self.setting("attendance.sites").await? {
+            let sites: Vec<domain::AttendanceSite> = serde_json::from_str(&raw)
+                .with_context(|| format!("打卡点配置格式错误：{raw}"))?;
+            return Ok(sites);
+        }
+        let Some(raw) = self.setting("attendance.site").await? else {
+            return Ok(Vec::new());
+        };
+        let site: domain::AttendanceSite = serde_json::from_str(&raw)
+            .with_context(|| format!("打卡点配置格式错误：{raw}"))?;
+        Ok(vec![site])
+    }
+
+    pub async fn set_attendance_sites(&self, sites: &[domain::AttendanceSite]) -> Result<()> {
+        let raw = serde_json::to_string(sites).context("序列化打卡点配置失败")?;
+        self.set_setting("attendance.sites", &raw).await?;
+        self.remove_setting("attendance.site").await
+    }
+
+    pub async fn clear_attendance_sites(&self) -> Result<()> {
+        self.remove_setting("attendance.sites").await?;
+        self.remove_setting("attendance.site").await
+    }
+
+    /// 每月补卡默认次数；未配置时回落 `DEFAULT_MAKEUP_QUOTA`。
+    pub async fn makeup_quota_default(&self) -> Result<i64> {
+        let raw = self.setting("attendance.makeup_quota").await?;
+        Ok(raw
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(domain::DEFAULT_MAKEUP_QUOTA))
+    }
+
+    pub async fn set_makeup_quota_default(&self, quota: i64) -> Result<()> {
+        self.set_setting("attendance.makeup_quota", &quota.to_string())
+            .await
+    }
+
+    /// 员工级配额：有覆盖用覆盖，否则用全局默认。
+    pub async fn makeup_quota_of(&self, employee_id: &str) -> Result<i64> {
+        let rows = self
+            .query_json(
+                "SELECT makeup_quota FROM attendance_quotas WHERE employee_id=?1",
+                params![employee_id],
+            )
+            .await?;
+        if let Some(quota) = rows.first().and_then(|r| r["makeup_quota"].as_i64()) {
+            return Ok(quota);
+        }
+        self.makeup_quota_default().await
+    }
+
+    pub async fn set_makeup_quota_of(&self, employee_id: &str, quota: i64) -> Result<()> {
+        self.execute(
+            "INSERT INTO attendance_quotas(employee_id, makeup_quota) VALUES(?1, ?2)
+             ON CONFLICT(employee_id) DO UPDATE SET makeup_quota=excluded.makeup_quota",
+            params![employee_id, quota],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 本月已占用的补卡次数：待审批与已通过都算，驳回/撤销不算。
+    pub async fn makeup_used_this_month(&self, employee_id: &str) -> Result<i64> {
+        let month = clock::local_month();
+        self.scalar_i64(
+            "SELECT COUNT(*) FROM makeup_requests
+              WHERE employee_id=?1 AND substr(work_date,1,7)=?2
+                AND status IN ('pending','approved')",
+            params![employee_id, month],
+        )
+        .await
+    }
+
+    /// 考勤时间策略：默认 09:00 - 18:00、午休 60 分钟。
+    pub async fn attendance_policy(&self) -> Result<domain::AttendancePolicy> {
+        let Some(raw) = self.setting("attendance.policy").await? else {
+            return Ok(domain::AttendancePolicy::default());
+        };
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    pub async fn set_attendance_policy(&self, policy: &domain::AttendancePolicy) -> Result<()> {
+        let raw = serde_json::to_string(policy).context("序列化考勤策略失败")?;
+        self.set_setting("attendance.policy", &raw).await
+    }
+
+    pub async fn attendance_exemptions(&self) -> Result<Vec<Value>> {
+        self.query_all(
+            "SELECT scope, target_id FROM attendance_exemptions ORDER BY scope, target_id",
+        )
+        .await
+    }
+
+    /// 添加/移除免考勤范围。
+    pub async fn set_attendance_exempt(
+        &self,
+        scope: &str,
+        target_id: &str,
+        exempt: bool,
+    ) -> Result<()> {
+        if exempt {
+            self.execute(
+                "INSERT INTO attendance_exemptions(scope, target_id) VALUES(?1, ?2)
+                 ON CONFLICT DO NOTHING",
+                params![scope, target_id],
+            )
+            .await?;
+        } else {
+            self.execute(
+                "DELETE FROM attendance_exemptions WHERE scope=?1 AND target_id=?2",
+                params![scope, target_id],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// 员工是否免考勤：本人或所在部门命中即豁免。
+    pub async fn is_attendance_exempt(&self, employee_id: &str) -> Result<bool> {
+        let rows = self
+            .query_json(
+                "SELECT 1 FROM attendance_exemptions x
+                  WHERE (x.scope='employee' AND x.target_id=?1)
+                     OR (x.scope='department'
+                         AND x.target_id=(SELECT dept_id FROM employees WHERE id=?1))
+                  LIMIT 1",
+                params![employee_id],
+            )
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     /* ---------------- 基础执行器（自动提交） ---------------- */
@@ -625,9 +877,24 @@ impl Store {
         let privileged = admin || matches!(role, "hr" | "finance" | "manager");
         let finance_scope = admin || matches!(role, "finance" | "manager");
         match name {
-            "employees" => self.query_all("SELECT * FROM employees ORDER BY id LIMIT 500").await,
+            // 薪资与邮箱仅 admin / HR 可见；其余角色（含经理）只保留本人的敏感字段
+            "employees" if admin || role == "hr" => {
+                self.query_all("SELECT * FROM employees ORDER BY id LIMIT 500").await
+            }
+            "employees" => {
+                self.query_json(
+                    "SELECT id, no, name, dept_id, position, status, entry_date, manager_id,
+                            account_frozen, created_at,
+                            CASE WHEN id=?1 THEN salary_cents ELSE 0 END AS salary_cents,
+                            CASE WHEN id=?1 THEN email ELSE NULL END AS email
+                     FROM employees ORDER BY id LIMIT 500",
+                    params![user.employee_id],
+                )
+                .await
+            }
             "departments" => self.query_all("SELECT * FROM departments ORDER BY id LIMIT 500").await,
-            "hr_cases" if privileged => {
+            // 人事异动含离职原因、调薪事由：财务不参与人事审批，不给看
+            "hr_cases" if admin || matches!(role, "hr" | "manager") => {
                 self.query_all("SELECT * FROM hr_cases ORDER BY id DESC LIMIT 500").await
             }
             "hr_cases" => Ok(vec![]),
@@ -659,6 +926,7 @@ impl Store {
             "contracts" if finance_scope => {
                 self.query_all("SELECT * FROM contracts ORDER BY id DESC LIMIT 500").await
             }
+            // 合同金额与对方主体不对非财务角色开放（台账页不展示，Agent 侧另有按归属裁剪）
             "contracts" => Ok(vec![]),
             "attendance" if privileged => {
                 self.query_all("SELECT * FROM attendance ORDER BY work_date DESC, id DESC LIMIT 500")
@@ -686,6 +954,78 @@ impl Store {
                 )
                 .await
             }
+            "leave_requests" if privileged => {
+                self.query_all(
+                    "SELECT * FROM leave_requests ORDER BY status='pending' DESC, start_date DESC LIMIT 500",
+                )
+                .await
+            }
+            "leave_requests" => {
+                self.query_json(
+                    "SELECT * FROM leave_requests WHERE employee_id=?1
+                     ORDER BY start_date DESC, id DESC LIMIT 500",
+                    params![user.employee_id],
+                )
+                .await
+            }
+            "leave_balances" if privileged => {
+                self.query_all("SELECT * FROM leave_balances ORDER BY employee_id, leave_type LIMIT 500")
+                    .await
+            }
+            "leave_balances" => {
+                self.query_json(
+                    "SELECT * FROM leave_balances WHERE employee_id=?1 ORDER BY leave_type",
+                    params![user.employee_id],
+                )
+                .await
+            }
+            "leave_balance_logs" if privileged => {
+                self.query_all(
+                    "SELECT * FROM leave_balance_logs ORDER BY created_at DESC, id DESC LIMIT 500",
+                )
+                .await
+            }
+            "leave_balance_logs" => {
+                self.query_json(
+                    "SELECT * FROM leave_balance_logs WHERE employee_id=?1
+                     ORDER BY created_at DESC, id DESC LIMIT 500",
+                    params![user.employee_id],
+                )
+                .await
+            }
+            "overtime_requests" if privileged => {
+                self.query_all(
+                    "SELECT * FROM overtime_requests ORDER BY status='pending' DESC, work_date DESC LIMIT 500",
+                )
+                .await
+            }
+            "overtime_requests" => {
+                self.query_json(
+                    "SELECT * FROM overtime_requests WHERE employee_id=?1
+                     ORDER BY work_date DESC, id DESC LIMIT 500",
+                    params![user.employee_id],
+                )
+                .await
+            }
+            "attendance_quotas" if privileged => {
+                self.query_all("SELECT * FROM attendance_quotas ORDER BY employee_id LIMIT 500")
+                    .await
+            }
+            "attendance_quotas" => {
+                self.query_json(
+                    "SELECT * FROM attendance_quotas WHERE employee_id=?1",
+                    params![user.employee_id],
+                )
+                .await
+            }
+            "attendance_exemptions" if privileged => {
+                self.query_all(
+                    "SELECT scope, target_id, created_at FROM attendance_exemptions
+                     ORDER BY scope, target_id LIMIT 500",
+                )
+                .await
+            }
+            "attendance_exemptions" => Ok(vec![]),
             "assets" => self.query_all("SELECT * FROM assets ORDER BY id LIMIT 500").await,
             "asset_events" if privileged => {
                 self.query_all("SELECT * FROM asset_events ORDER BY created_at DESC, id LIMIT 500")

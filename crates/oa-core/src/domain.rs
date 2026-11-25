@@ -213,9 +213,42 @@ pub fn can_transition_asset(from: &str, to: &str) -> bool {
     )
 }
 
+/// 默认上班时间 09:00；管理员可在设置里改。
 pub const WORK_START_MIN: i64 = 9 * 60;
-pub const WORK_END_MIN: i64 = 17 * 60 + 30;
+/// 默认下班时间 18:00；管理员可在设置里改。
+pub const WORK_END_MIN: i64 = 18 * 60;
+/// 默认午休 60 分钟。
 pub const LUNCH_MIN: i64 = 60;
+
+/// 考勤时间策略：上下班时间与午休时长，存 `settings.attendance.policy`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttendancePolicy {
+    pub work_start: String,
+    pub work_end: String,
+    pub lunch_minutes: i64,
+}
+
+impl Default for AttendancePolicy {
+    fn default() -> Self {
+        Self {
+            work_start: "09:00".to_string(),
+            work_end: "18:00".to_string(),
+            lunch_minutes: LUNCH_MIN,
+        }
+    }
+}
+
+impl AttendancePolicy {
+    pub fn start_min(&self) -> i64 {
+        parse_time(&self.work_start).unwrap_or(WORK_START_MIN)
+    }
+    pub fn end_min(&self) -> i64 {
+        parse_time(&self.work_end).unwrap_or(WORK_END_MIN)
+    }
+}
+
+/// 免考勤的适用范围。
+pub const EXEMPT_SCOPES: &[&str] = &["employee", "department"];
 
 /// "HH:MM" → 距零点分钟数。
 pub fn parse_time(hhmm: &str) -> Option<i64> {
@@ -228,25 +261,39 @@ pub fn parse_time(hhmm: &str) -> Option<i64> {
     Some(h * 60 + m)
 }
 
-/// 打卡异常判定：晚于 09:00 上班记 late，早于 17:30 下班记 early。
-pub fn punch_status(kind: &str, time: &str) -> &'static str {
+/// 打卡异常判定（使用显式上下班时间）：晚于上班记 late，早于下班记 early。
+pub fn punch_status_with(kind: &str, time: &str, start_min: i64, end_min: i64) -> &'static str {
     let Some(min) = parse_time(time) else {
         return "normal";
     };
     match kind {
-        "out" if min < WORK_END_MIN => "early",
-        "in" if min > WORK_START_MIN => "late",
+        "out" if min < end_min => "early",
+        "in" if min > start_min => "late",
         _ => "normal",
     }
 }
 
-/// 计算工时（扣除 1 小时午休，保留 1 位小数，下限 0）。
-pub fn work_hours(clock_in: Option<&str>, clock_out: Option<&str>) -> f64 {
+/// 打卡异常判定（默认 09:00 / 18:00）。
+pub fn punch_status(kind: &str, time: &str) -> &'static str {
+    punch_status_with(kind, time, WORK_START_MIN, WORK_END_MIN)
+}
+
+/// 计算工时（扣除指定午休分钟数，保留 1 位小数，下限 0）。
+pub fn work_hours_with(
+    clock_in: Option<&str>,
+    clock_out: Option<&str>,
+    lunch_min: i64,
+) -> f64 {
     let (Some(a), Some(b)) = (clock_in.and_then(parse_time), clock_out.and_then(parse_time)) else {
         return 0.0;
     };
-    let raw = (b - a - LUNCH_MIN) as f64 / 60.0;
+    let raw = (b - a - lunch_min) as f64 / 60.0;
     (raw.max(0.0) * 10.0).round() / 10.0
+}
+
+/// 计算工时（默认午休 60 分钟）。
+pub fn work_hours(clock_in: Option<&str>, clock_out: Option<&str>) -> f64 {
+    work_hours_with(clock_in, clock_out, LUNCH_MIN)
 }
 
 /// 按金额与业务类型分派审批链（分单位）。
@@ -306,7 +353,103 @@ pub const SENSITIVE_TOOLS: &[&str] = &[
     "contract.create",
     "contract.approve",
     "attendance.approve",
+    "attendance.leave.approve",
+    "attendance.overtime.approve",
 ];
+
+/// 请假类型（参考钉钉默认口径）。前端按 key 做 i18n，落库存 key。
+pub const LEAVE_TYPES: &[&str] = &[
+    "annual",       // 年假
+    "personal",     // 事假
+    "sick",         // 病假
+    "compensatory", // 调休
+    "marriage",     // 婚假
+    "maternity",    // 产假
+    "paternity",    // 陪产假
+    "bereavement",  // 丧假
+    "lactation",    // 哺乳假
+    "work_injury",  // 工伤假
+    "travel",       // 路途假
+    "other",        // 其他
+];
+
+/// 需要扣减额度的假期类型：年假与调休。
+pub const LEAVE_BALANCE_TYPES: &[&str] = &["annual", "compensatory"];
+
+/// 请假审批链：≤3 天为主管 + 总监；>3 天追加 HRBP。
+pub fn leave_chain(days: i64) -> Vec<&'static str> {
+    if days > 3 {
+        vec!["直属主管", "HRBP", "部门总监"]
+    } else {
+        vec!["直属主管", "部门总监"]
+    }
+}
+
+/// 区间内的工作日列表（含起止、排除周六日，按本地日期字符串返回）。
+/// 法定节假日没有内置数据，报表口径以「周一至周五」为准。
+pub fn workdays_in(start: &str, end: &str) -> Vec<String> {
+    use chrono::{Datelike, NaiveDate};
+    let (Ok(start), Ok(end)) = (
+        NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d"),
+        NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d"),
+    ) else {
+        return Vec::new();
+    };
+    if end < start {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cur = start;
+    while cur <= end {
+        if cur.weekday().num_days_from_monday() < 5 {
+            out.push(cur.format("%Y-%m-%d").to_string());
+        }
+        let Some(next) = cur.succ_opt() else { break };
+        cur = next;
+    }
+    out
+}
+
+/// 工作日天数；区间非法或没有工作日时返回 0。
+pub fn workdays_between(start: &str, end: &str) -> i64 {
+    workdays_in(start, end).len() as i64
+}
+
+/// 加班申请默认开始时间。
+pub const OVERTIME_DEFAULT_START: &str = "18:00";
+
+/// 加班转调休折算标准：8 小时 = 1 天。
+pub const OVERTIME_HOURS_PER_DAY: f64 = 8.0;
+
+/// 每月补卡默认次数；管理员可按员工单独覆盖。
+pub const DEFAULT_MAKEUP_QUOTA: i64 = 3;
+
+/// 加班时长（小时，保留 1 位小数）。
+/// `end <= start` 视为跨天（如 18:00 ~ 02:00 = 8h）；相等或超过 16 小时返回 `None`。
+pub fn overtime_hours(start: &str, end: &str) -> Option<f64> {
+    let a = parse_time(start)?;
+    let b = parse_time(end)?;
+    let mins = if b > a {
+        b - a
+    } else if b < a {
+        b + 24 * 60 - a
+    } else {
+        return None;
+    };
+    if mins > 16 * 60 {
+        return None;
+    }
+    Some((mins as f64 / 60.0 * 10.0).round() / 10.0)
+}
+
+/// 加班审批链：≤4 小时直属主管；>4 小时追加部门总监。
+pub fn overtime_chain(hours: f64) -> Vec<&'static str> {
+    if hours > 4.0 {
+        vec!["直属主管", "部门总监"]
+    } else {
+        vec!["直属主管"]
+    }
+}
 
 pub const TOOL_NAMES: &[&str] = &[
     "hr.onboard",
@@ -314,6 +457,9 @@ pub const TOOL_NAMES: &[&str] = &[
     "hr.promote",
     "hr.approve",
     "hr.roster.query",
+    "hr.leave.balance.set",
+    "hr.makeup.quota",
+    "hr.attendance.exempt",
     "org.chart",
     "finance.claim.create",
     "finance.claim.approve",
@@ -325,6 +471,12 @@ pub const TOOL_NAMES: &[&str] = &[
     "attendance.makeup",
     "attendance.approve",
     "attendance.report",
+    "attendance.leave",
+    "attendance.leave.approve",
+    "attendance.leave.cancel",
+    "attendance.overtime",
+    "attendance.overtime.approve",
+    "attendance.overtime.cancel",
     "asset.register",
     "asset.assign",
     "asset.return",
@@ -342,7 +494,13 @@ pub const TABLE_NAMES: &[&str] = &[
     "claim_items",
     "contracts",
     "attendance",
+    "attendance_quotas",
+    "attendance_exemptions",
     "makeup_requests",
+    "leave_requests",
+    "leave_balances",
+    "leave_balance_logs",
+    "overtime_requests",
     "assets",
     "budgets",
     "approval_flows",
@@ -402,7 +560,7 @@ pub const FEATURES: &[(&str, &str, &str)] = &[
     ("AS-02", "asset", "领用占用自动改派 + 责任人写入"),
     ("AS-03", "asset", "归还释放责任人 + 状态回写"),
     ("AS-04", "asset", "盘点按类别/状态检索 + 原值合计"),
-    ("AG-01", "agent", "23 个工具全部注册且可调用"),
+    ("AG-01", "agent", "32 个工具全部注册且可调用"),
     ("AG-02", "agent", "自然语言意图解析（中英双语）"),
     ("AG-03", "agent", "多步编排：入职联动资产/合同，离职联动回收"),
     ("AG-04", "agent", "敏感操作人工确认门禁"),
@@ -414,6 +572,48 @@ pub const FEATURES: &[(&str, &str, &str)] = &[
     ("PL-02", "platform", "Postgres 统一数据源 + 幂等 seed + 一键重置"),
     ("PL-03", "platform", "工作台 KPI 与审计查询"),
 ];
+
+/// 管理员配置的打卡点：员工必须落在任一点自己的 `radius_m` 范围内才能打卡。
+///
+/// 半径按点独立配置：总部大楼可以给 2km，厂区可以给 10km。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttendanceSite {
+    /// 打卡点名称，用于设置页与超标提示；旧版单点配置没有该字段，反序列化时留空。
+    #[serde(default)]
+    pub name: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub radius_m: i64,
+    pub address: String,
+}
+
+impl AttendanceSite {
+    /// 展示名：优先名称，其次地址，都没有时回落到「打卡点」。
+    pub fn display_name(&self) -> &str {
+        let name = self.name.trim();
+        if !name.is_empty() {
+            return name;
+        }
+        let address = self.address.trim();
+        if !address.is_empty() {
+            return address;
+        }
+        "打卡点"
+    }
+}
+
+/// 打卡范围默认值（米）。
+pub const DEFAULT_ATTENDANCE_RADIUS_M: i64 = 2000;
+
+/// 两点球面距离（米）。Haversine 在办公场景（公里级）足够精确，且不引入地理库依赖。
+pub fn haversine_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const EARTH_RADIUS_M: f64 = 6_371_000.0;
+    let (phi1, phi2) = (lat1.to_radians(), lat2.to_radians());
+    let dphi = (lat2 - lat1).to_radians();
+    let dlambda = (lon2 - lon1).to_radians();
+    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
+    EARTH_RADIUS_M * 2.0 * a.sqrt().atan2((1.0 - a).sqrt())
+}
 
 #[cfg(test)]
 mod tests {
@@ -432,12 +632,18 @@ mod tests {
     fn punch_rules() {
         assert_eq!(punch_status("in", "08:52"), "normal");
         assert_eq!(punch_status("in", "09:16"), "late");
-        // 规则是「早于 17:30 下班记 early」，17:35 已在下班时间之后，应判 normal
+        // 默认下班 18:00：17:35 仍算早退，18:00 起算正常
         assert_eq!(punch_status("out", "17:20"), "early");
-        assert_eq!(punch_status("out", "17:35"), "normal");
+        assert_eq!(punch_status("out", "17:35"), "early");
+        assert_eq!(punch_status("out", "18:00"), "normal");
         assert_eq!(punch_status("out", "18:12"), "normal");
         assert_eq!(punch_status("in", "bad"), "normal");
         assert_eq!(parse_time("25:00"), None);
+        // 可配置时间：10:00 上班、19:00 下班
+        assert_eq!(punch_status_with("in", "09:30", 600, 1140), "normal");
+        assert_eq!(punch_status_with("out", "18:30", 600, 1140), "early");
+        assert_eq!(punch_status_with("in", "10:30", 600, 1140), "late");
+        assert_eq!(AttendancePolicy::default().end_min(), 18 * 60);
     }
 
     #[test]
@@ -476,12 +682,64 @@ mod tests {
 
     #[test]
     fn matrix_and_tool_list_are_consistent() {
-        assert_eq!(TOOL_NAMES.len(), 23);
-        assert_eq!(TABLE_NAMES.len(), 15);
+        assert_eq!(TOOL_NAMES.len(), 32);
+        assert_eq!(TABLE_NAMES.len(), 21);
         assert!(FEATURES.len() >= 25);
         let mut sorted = TOOL_NAMES.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 23, "tool names must be unique");
+        assert_eq!(sorted.len(), 32, "tool names must be unique");
+    }
+
+    #[test]
+    fn leave_workdays_skip_weekends() {
+        // 2026-11-23 周一 ~ 2026-11-27 周五 = 5 天
+        assert_eq!(workdays_between("2026-11-23", "2026-11-27"), 5);
+        // 2026-11-21 周六 ~ 2026-11-22 周日 = 0 天
+        assert_eq!(workdays_between("2026-11-21", "2026-11-22"), 0);
+        // 跨周：周五 ~ 下周一 = 2 天
+        assert_eq!(workdays_between("2026-11-20", "2026-11-23"), 2);
+        // 非法区间
+        assert_eq!(workdays_between("2026-11-27", "2026-11-23"), 0);
+        assert_eq!(workdays_in("2026-11-23", "2026-11-24").len(), 2);
+    }
+
+    #[test]
+    fn leave_chain_adds_hrbp_beyond_three_days() {
+        assert_eq!(leave_chain(3), vec!["直属主管", "部门总监"]);
+        assert_eq!(leave_chain(4), vec!["直属主管", "HRBP", "部门总监"]);
+    }
+
+    #[test]
+    fn overtime_hours_handles_cross_midnight() {
+        assert_eq!(overtime_hours("18:00", "21:00"), Some(3.0));
+        // 跨天：22:00 ~ 次日 02:00 = 4 小时
+        assert_eq!(overtime_hours("22:00", "02:00"), Some(4.0));
+        // 起止相同与超过 16 小时都视为非法
+        assert_eq!(overtime_hours("18:00", "18:00"), None);
+        assert_eq!(overtime_hours("18:00", "12:00"), None);
+        assert_eq!(OVERTIME_DEFAULT_START, "18:00");
+        assert_eq!(OVERTIME_HOURS_PER_DAY, 8.0);
+        assert_eq!(DEFAULT_MAKEUP_QUOTA, 3);
+    }
+
+    #[test]
+    fn overtime_chain_adds_director_beyond_four_hours() {
+        assert_eq!(overtime_chain(4.0), vec!["直属主管"]);
+        assert_eq!(overtime_chain(4.5), vec!["直属主管", "部门总监"]);
+    }
+
+    #[test]
+    fn haversine_matches_known_short_distance() {
+        // 纬度差 0.001° ≈ 111 米，办公场景的量级足够用
+        let d = haversine_meters(31.2304, 121.4737, 31.2314, 121.4737);
+        assert!((d - 111.2).abs() < 2.0, "unexpected distance: {d}");
+        // 同一点距离为 0
+        assert!(haversine_meters(31.2304, 121.4737, 31.2304, 121.4737) < 0.001);
+    }
+
+    #[test]
+    fn default_attendance_radius_is_two_km() {
+        assert_eq!(DEFAULT_ATTENDANCE_RADIUS_M, 2000);
     }
 }

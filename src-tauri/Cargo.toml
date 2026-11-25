@@ -15,6 +15,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# 移动端打卡定位：Android 需 ACCESS_FINE_LOCATION，iOS 需 NSLocationWhenInUseUsageDescription
+tauri-plugin-geolocation = "2"
 # 自动更新：客户端启动后拉 Release 上的 latest.json，按签名校验安装包
 tauri-plugin-updater = "2"
 # generate_context! 反序列化 tauri.conf.json 的 plugins 段时会引用 serde_json，

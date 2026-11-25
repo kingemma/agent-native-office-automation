@@ -61,7 +61,7 @@ async function submit(): Promise<void> {
   <div class="login-page">
     <div class="login-brand">
       <div class="lb-logo">
-        <span class="lb-mark"><Icon name="flow" :size="26" /></span>
+        <span class="lb-mark"><img src="/logo-icon.svg" alt="" /></span>
         <div>
           <h1>{{ t('app.name') }}</h1>
           <p>{{ t('app.slogan') }}</p>
@@ -220,9 +220,10 @@ async function submit(): Promise<void> {
   border-radius: 14px;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: #fff;
+  overflow: hidden;
 }
+.lb-mark img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
 .lb-logo h1 { margin: 0; font-size: 24px; letter-spacing: 1px; }
 .lb-logo p { margin: 2px 0 0; font-size: 11px; letter-spacing: 2.4px; opacity: 0.78; }
 .lb-hero { max-width: 520px; position: relative; z-index: 1; }
