@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 169" width="256" height="169">
+  <defs>
+    <linearGradient id="navy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#04356F"/>
+      <stop offset="1" stop-color="#012A5C"/>
+    </linearGradient>
+    <linearGradient id="blueBand" gradientUnits="userSpaceOnUse" x1="41" y1="30" x2="173" y2="40">
+      <stop offset="0" stop-color="#0179B6"/>
+      <stop offset="1" stop-color="#07B0D6"/>
+    </linearGradient>
+    <linearGradient id="blueCap" gradientUnits="userSpaceOnUse" x1="7" y1="145" x2="56" y2="145">
+      <stop offset="0" stop-color="#00508F"/>
+      <stop offset="0.75" stop-color="#0189C1"/>
+      <stop offset="1" stop-color="#0295CC"/>
+    </linearGradient>
+    <linearGradient id="gearG" gradientUnits="userSpaceOnUse" x1="114" y1="70" x2="150" y2="110">
+      <stop offset="0" stop-color="#C3D2E0"/>
+      <stop offset="1" stop-color="#93A9C0"/>
+    </linearGradient>
+    <linearGradient id="dbBody" gradientUnits="userSpaceOnUse" x1="210" y1="76" x2="210" y2="128">
+      <stop offset="0" stop-color="#004583"/>
+      <stop offset="0.5" stop-color="#015290"/>
+      <stop offset="1" stop-color="#1C77AC"/>
+    </linearGradient>
+    <linearGradient id="dbTop" gradientUnits="userSpaceOnUse" x1="192" y1="71" x2="229" y2="82">
+      <stop offset="0" stop-color="#5FB2D8"/>
+      <stop offset="1" stop-color="#3E93BE"/>
+    </linearGradient>
+    <linearGradient id="bubbleG" gradientUnits="userSpaceOnUse" x1="205" y1="8" x2="205" y2="54">
+      <stop offset="0" stop-color="#0AC2E4"/>
+      <stop offset="0.82" stop-color="#05AED2"/>
+      <stop offset="1" stop-color="#0A7FA8"/>
+    </linearGradient>
+    <clipPath id="glyphClip">
+      <path d="M58 13 L183 13 L168 52 L41 52 Z M102 52 L145 52 L128 128 L89 128 Z M30 122 L253 134 L230 164 L7 160 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- letter I -->
+  <path d="M58 13 L183 13 L168 52 L41 52 Z M102 52 L145 52 L128 128 L89 128 Z M30 122 L253 134 L230 164 L7 160 Z" fill="url(#navy)" stroke="url(#navy)" stroke-width="3" stroke-linejoin="round"/>
+  <g clip-path="url(#glyphClip)">
+    <path d="M52 26 L173 26 L167 42 L70 42 L64 52 L41 52 Z" fill="url(#blueBand)"/>
+    <path d="M30 122 L56 123 Q51 145 44 164 L7 160 Z" fill="url(#blueCap)"/>
+    <path d="M40 124 Q31 144 27 161 L34 161 Q39 143 48 125 Z" fill="#0A8CC9" opacity="0.55"/>
+  </g>
+
+  <!-- platform -->
+  <path d="M165 126 L247 126.5 Q250.5 129 247 131.5 L166 133 Q161.5 129.5 165 126 Z" fill="#DCE4EC"/>
+
+  <!-- database cylinder -->
+  <path d="M192 76.5 L192 122 A18.5 5.5 0 0 0 229 122 L229 76.5 Z" fill="url(#dbBody)"/>
+  <path d="M192 94 A18.5 5.5 0 0 0 229 94" fill="none" stroke="#E8F4FA" stroke-width="1.5"/>
+  <path d="M192 110 A18.5 5.5 0 0 0 229 110" fill="none" stroke="#E8F4FA" stroke-width="1.5"/>
+  <ellipse cx="210.5" cy="76.5" rx="18.5" ry="6" fill="url(#dbTop)"/>
+  <circle cx="223.5" cy="87" r="1.6" fill="#DFF3FA"/>
+  <circle cx="223.5" cy="103.5" r="1.6" fill="#DFF3FA"/>
+  <circle cx="223.5" cy="119" r="1.6" fill="#DFF3FA"/>
+
+  <!-- bar chart -->
+  <rect x="172.5" y="92" width="7" height="35" rx="2" fill="#0188BB"/>
+  <rect x="182.5" y="99" width="6.5" height="28" rx="2" fill="#01A0C8"/>
+
+  <!-- gear -->
+  <path d="M 145.92 90.57 L 151.58 93.19 L 148.51 100.59 L 142.66 98.44 L 140.44 100.66 L 142.59 106.51 L 135.19 109.58 L 132.57 103.92 L 129.43 103.92 L 126.81 109.58 L 119.41 106.51 L 121.56 100.66 L 119.34 98.44 L 113.49 100.59 L 110.42 93.19 L 116.08 90.57 L 116.08 87.43 L 110.42 84.81 L 113.49 77.41 L 119.34 79.56 L 121.56 77.34 L 119.41 71.49 L 126.81 68.42 L 129.43 74.08 L 132.57 74.08 L 135.19 68.42 L 142.59 71.49 L 140.44 77.34 L 142.66 79.56 L 148.51 77.41 L 151.58 84.81 L 145.92 87.43 Z" fill="url(#gearG)"/>
+  <circle cx="131" cy="89" r="9" fill="#F2F6FA"/>
+  <circle cx="131" cy="89" r="5.8" fill="#022C62"/>
+
+  <!-- circuit -->
+  <path d="M131 116 L131 131.5 L66 131.5 L57.5 144 L57.5 149 L228 149" fill="none" stroke="#22EAF4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" opacity="0.22"/>
+  <path d="M131 116 L131 131.5 L66 131.5 L57.5 144 L57.5 149 L228 149" fill="none" stroke="#22EAF4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="77.5" cy="149" r="4" fill="#22EAF4"/>
+  <circle cx="77.5" cy="149" r="1.7" fill="#02306A"/>
+  <circle cx="169.5" cy="149" r="4" fill="#22EAF4"/>
+  <circle cx="169.5" cy="149" r="1.7" fill="#02306A"/>
+  <circle cx="226.5" cy="149" r="4" fill="#22EAF4"/>
+  <circle cx="226.5" cy="149" r="1.7" fill="#02306A"/>
+
+  <!-- speech bubble -->
+  <path d="M178 8 L236 9.5 Q245 10 244 18 L232.5 46 Q231 53.5 223 53 L180 52 L169 64 L167.5 51.5 Q161 50.5 161.5 42.5 L165 16 Q166 8.5 174 8 Z" fill="url(#bubbleG)"/>
+  <text x="201" y="38.5" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF" text-anchor="middle">Agent</text>
+</svg>
