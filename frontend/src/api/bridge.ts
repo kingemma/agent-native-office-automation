@@ -308,6 +308,18 @@ export interface LlmProviderPreset {
   needs_key: boolean
 }
 
+/** 管理员配置的一条模型：name 是用户看到的名称，model 才是真实模型 id */
+export interface LlmCatalogModel {
+  name: string
+  provider: string
+  base_url: string
+  model: string
+  has_key: boolean
+  /** 已存 Key 的掩码，明文只留在后端 */
+  key_hint: string
+  is_default: boolean
+}
+
 /** 模型配置视图：api_key 永远是掩码，明文只留在后端 */
 export interface LlmSettingsView {
   provider: string
@@ -318,23 +330,32 @@ export interface LlmSettingsView {
   source: 'db' | 'env' | 'none'
   mode: 'llm' | 'local'
   providers: LlmProviderPreset[]
-}
-
-export interface LlmSettingsInput {
-  provider: string
-  base_url: string
-  model: string
-  /** 留空表示沿用已存 Key */
-  api_key: string
-  clear?: boolean
+  /** 多模型目录（旧版本只有单条配置时，后端会合成一条） */
+  models: LlmCatalogModel[]
+  /** 默认模型名；空串表示没有目录 */
+  default_model: string
 }
 
 export async function getLlmSettings(): Promise<LlmSettingsView> {
   return httpGet<LlmSettingsView>('/api/settings/llm')
 }
 
-export async function saveLlmSettings(input: LlmSettingsInput): Promise<LlmSettingsView> {
-  return httpPost<LlmSettingsView>('/api/settings/llm', input)
+/** 整表保存模型目录：新增/改默认/删除都走这一条 */
+export interface LlmCatalogInput {
+  /** 默认模型名；留空取第一条 */
+  default: string
+  models: Array<{
+    name: string
+    provider: string
+    base_url: string
+    model: string
+    /** 留空表示沿用同名条目的旧 Key */
+    api_key: string
+  }>
+}
+
+export async function saveLlmCatalog(input: LlmCatalogInput): Promise<LlmSettingsView> {
+  return httpPost<LlmSettingsView>('/api/settings/llm/catalog', input)
 }
 
 /** 连通性自检的入参：留空字段由服务端回落到已存配置 */
@@ -381,10 +402,12 @@ export async function agentChat(message: string): Promise<AgentReply> {
 
 /** GET /api/agent/models：对话页模型下拉的数据源 */
 export interface AgentModelsView {
-  /** 当前端点可用的模型名 */
+  /** 可选模型名：管理员配置目录时为条目名称 */
   models: string[]
-  /** 已配置的模型，作为默认选中项 */
+  /** 该用户上次选的模型；没选过是默认模型 */
   current: string
+  /** 管理员设定的默认模型名 */
+  default: string
   /** llm / local */
   mode: string
   /** 拉取失败时的原因，列表会退回只含 current */
@@ -401,6 +424,7 @@ export async function listAgentModels(): Promise<AgentModelsView> {
   return {
     models: Array.isArray(data.models) ? data.models.map(String) : [],
     current: String(data.current ?? ''),
+    default: String(data.default ?? ''),
     mode: String(data.mode ?? ''),
     error: String(data.error ?? ''),
   }

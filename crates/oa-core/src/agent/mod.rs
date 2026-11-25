@@ -195,31 +195,41 @@ async fn run_with_history(
         thinker.say("route", "没有可用模型配置，走本地意图引擎");
         return intent::run_local_stream(state, user, message, thinker).await;
     }
-    // 对话页可以临时换模型：Base URL / Key 仍用已存配置，只覆盖 model 名
-    let label = effective
-        .config
-        .as_ref()
-        .map(|c| {
-            let model = if model.trim().is_empty() { &c.model } else { model.trim() };
-            format!("{}/{}", c.provider, model)
-        })
-        .unwrap_or_else(|| "llm".to_string());
+    // 对话页选的是目录里的「名称」，命中就用该条目的整份配置（端点与 Key 都跟着走），
+    // 名称失效退默认条目；目录为空（只有环境变量或旧单条配置）时才只覆盖模型名
+    let requested = model.trim();
+    let cat = llm::catalog(&state.store).await?;
+    let picked = if requested.is_empty() {
+        cat.default_entry().map(|e| e.config())
+    } else {
+        cat.find(requested)
+            .map(|e| e.config())
+            .or_else(|| cat.default_entry().map(|e| e.config()))
+    };
+    let config = match picked {
+        Some(cfg) => cfg,
+        None => {
+            let stored = effective.config.clone().ok_or_else(|| {
+                anyhow!(
+                    "缺少 LLM 配置：请让管理员在「模型设置」里添加模型并填写 API Key，\
+                     或设置 OPENAI_API_KEY 环境变量（也可用 OA_AGENT_MODE=local 走离线引擎）"
+                )
+            })?;
+            if requested.is_empty() {
+                stored
+            } else {
+                llm::LlmConfig { model: requested.to_string(), ..stored }
+            }
+        }
+    };
+    let label = format!("{}/{}", config.provider, config.model);
     thinker.say("route", format!("使用模型 {label} 推理并调用工具"));
     if !history.is_empty() {
         thinker.say("llm", format!("携带最近 {} 轮对话作为上下文", history.len()));
     }
 
     let before = state.store.last_audit_id().await.unwrap_or(0);
-    match run_llm(
-        state.clone(),
-        user,
-        message,
-        history,
-        model,
-        effective.config,
-        &mut thinker,
-    )
-    .await
+    match run_llm(state.clone(), user, message, history, config, &mut thinker).await
     {
         Ok(mut reply) => {
             reply.thinking = thinker.snapshot();
@@ -270,22 +280,10 @@ async fn run_llm(
     user: &SessionUser,
     message: &str,
     history: &[ChatTurn],
-    model: &str,
-    config: Option<llm::LlmConfig>,
+    config: llm::LlmConfig,
     thinker: &mut Thinker,
 ) -> Result<AgentReply> {
-    let stored = config.ok_or_else(|| {
-        anyhow!(
-            "缺少 LLM 配置：请在「模型设置」里选择提供商并填写 API Key，\
-             或设置 OPENAI_API_KEY 环境变量（也可用 OA_AGENT_MODE=local 走离线引擎）"
-        )
-    })?;
-    // 只覆盖模型名：请求里没指定（空串）就用已存配置的那个
-    let cfg = if model.trim().is_empty() {
-        stored
-    } else {
-        llm::LlmConfig { model: model.trim().to_string(), ..stored }
-    };
+    let cfg = config;
     let client = llm::build_client(&cfg)?;
 
     let before = state.store.last_audit_id().await?;

@@ -238,15 +238,36 @@ async fn chat(
     Ok(Json(reply))
 }
 
-/// 对话页的模型下拉数据源：列出当前端点可用的模型，任意登录用户可读。
+/// 对话页的模型下拉数据源，任意登录用户可读。
 ///
-/// 只暴露模型名，不含 Key；端点不实现 `/models` 时退回「只用已存模型」，
-/// 不因此把对话页卡住。
+/// 管理员配了模型目录时，目录里的 `name` 就是全部可选项（也是回传给服务端的标识）；
+/// 目录为空（只有环境变量 / 旧单条配置）时才退回「探测端点 /models」的老行为。
 async fn agent_models(
     State(st): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&st, &headers).await?;
+    let cat = agent::llm::catalog(&st.app.store).await.map_err(err500)?;
+    if !cat.is_empty() {
+        let models: Vec<String> = cat.entries.iter().map(|e| e.name.clone()).collect();
+        let default = cat.default_entry().map(|e| e.name.clone()).unwrap_or_default();
+        // 用户上次选的名称优先；条目被管理员删掉时回落到默认模型
+        let saved = agent::llm::user_model(&st.app.store, &user.employee_id)
+            .await
+            .unwrap_or(None);
+        let current = match saved {
+            Some(m) if models.iter().any(|x| x == &m) => m,
+            _ => default.clone(),
+        };
+        return Ok(Json(json!({
+            "models": models,
+            "current": current,
+            "default": default,
+            "mode": "llm",
+            "error": "",
+        })));
+    }
+
     let configured = agent::llm::effective(&st.app.store).await.map_err(err500)?;
     let Some(cfg) = configured.config else {
         return Ok(Json(json!({ "models": [], "current": "", "mode": "local" })));
@@ -270,7 +291,13 @@ async fn agent_models(
         }
         Err(e) => (vec![cfg.model.clone()], format!("{e:#}")),
     };
-    Ok(Json(json!({ "models": models, "current": current, "mode": "llm", "error": error })))
+    Ok(Json(json!({
+        "models": models,
+        "current": current,
+        "default": cfg.model.clone(),
+        "mode": "llm",
+        "error": error,
+    })))
 }
 
 /// 记住当前用户选的对话模型（个人偏好，跨设备生效）
@@ -289,6 +316,11 @@ async fn set_agent_model(
     let model = req.model.trim();
     if model.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "模型名不能为空".to_string()));
+    }
+    // 有目录时必须选目录里的名称：否则对话会静默退到默认模型，用户以为换成功了
+    let cat = agent::llm::catalog(&st.app.store).await.map_err(err500)?;
+    if !cat.is_empty() && cat.find(model).is_none() {
+        return Err((StatusCode::BAD_REQUEST, format!("模型「{model}」不在可选列表中")));
     }
     agent::llm::set_user_model(&st.app.store, &user.employee_id, model)
         .await
@@ -605,6 +637,59 @@ async fn save_llm_settings(
         .await
     };
     view.map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct LlmCatalogEntryReq {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    model: String,
+    /// 空串表示沿用同名条目的旧 Key（界面只有掩码，不回传明文）
+    #[serde(default)]
+    api_key: String,
+}
+
+#[derive(Deserialize, Default)]
+struct LlmCatalogReq {
+    /// 默认模型名；留空取列表第一条
+    #[serde(default)]
+    default: String,
+    #[serde(default)]
+    models: Vec<LlmCatalogEntryReq>,
+}
+
+/// 保存多模型目录（仅管理员）。整表提交：新增、改默认、删除都走这一条，
+/// 服务端一次校验完再落库，避免界面分步保存留下半个状态。
+async fn save_llm_catalog(
+    State(st): State<WebState>,
+    headers: HeaderMap,
+    Json(req): Json<LlmCatalogReq>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&st, &headers).await?;
+    require_admin(&user)?;
+    let input = agent::llm::Catalog {
+        default: req.default,
+        entries: req
+            .models
+            .into_iter()
+            .map(|m| agent::llm::CatalogEntry {
+                name: m.name,
+                provider: m.provider,
+                base_url: m.base_url,
+                model: m.model,
+                api_key: m.api_key,
+            })
+            .collect(),
+    };
+    agent::llm::save_catalog(&st.app.store, input)
+        .await
+        .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
@@ -993,6 +1078,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/settings/makeup-quota",
             get(get_makeup_quota).post(save_makeup_quota),
         )
+        .route("/api/settings/llm/catalog", post(save_llm_catalog))
         .route("/api/settings/llm/test", post(test_llm_settings))
         .route("/api/settings/llm/models", post(list_llm_models))
         .route("/api/features", get(features))

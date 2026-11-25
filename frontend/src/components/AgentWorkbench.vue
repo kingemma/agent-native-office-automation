@@ -19,9 +19,12 @@ withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
 const { t } = useI18n()
 const draft = ref('')
 const traceOpen = ref(false)
-/** 头部模型下拉的选项：服务端返回的可用模型 */
+/** 头部模型下拉的选项：管理员配置的模型名称，默认项在标签里标注 */
 const modelOptions = computed(() =>
-  session.models.map((m) => ({ label: m, value: m })),
+  session.models.map((m) => ({
+    label: m === session.defaultModel ? `${m} · ${t('agent.modelDefault')}` : m,
+    value: m,
+  })),
 )
 const chatBody = ref<HTMLElement | null>(null)
 const caps = ['capHr', 'capFin', 'capCon', 'capAtt', 'capAst']

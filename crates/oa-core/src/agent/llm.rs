@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 /// 配置在 settings 表里的键名（值为一段 JSON）
 pub const SETTING_KEY: &str = "llm.config";
 
+/// 多模型目录的键名：管理员可配置多个模型，用户在对话页按名称选择
+pub const CATALOG_KEY: &str = "llm.catalog";
+
 /// 落库的配置。`api_key` 只在这里出现，对外一律走 [`mask_key`]。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LlmConfig {
@@ -25,6 +28,61 @@ pub struct LlmConfig {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+}
+
+/// 目录里的一条模型。
+///
+/// `name` 是给用户看的名称（对话页下拉显示的也是它），`model` 是真实模型 id：
+/// 分开两个字段才能做到「同一端点两个 Key」「不同端点同名模型」。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CatalogEntry {
+    pub name: String,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl CatalogEntry {
+    /// 条目 → 单条配置（端点与 Key 都跟着条目走，不与其他条目混用）
+    pub fn config(&self) -> LlmConfig {
+        LlmConfig {
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            api_key: self.api_key.clone(),
+        }
+    }
+}
+
+/// 管理员维护的模型目录：`default` 指向某个条目的 `name`
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Catalog {
+    #[serde(default)]
+    pub default: String,
+    #[serde(default)]
+    pub entries: Vec<CatalogEntry>,
+}
+
+impl Catalog {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 默认条目：`default` 指向失效时退到第一条，避免改名后对话页没有默认
+    pub fn default_entry(&self) -> Option<&CatalogEntry> {
+        let want = self.default.trim();
+        self.entries
+            .iter()
+            .find(|e| e.name.trim() == want)
+            .or_else(|| self.entries.first())
+    }
+
+    pub fn find(&self, name: &str) -> Option<&CatalogEntry> {
+        let want = name.trim();
+        self.entries.iter().find(|e| e.name.trim() == want)
+    }
 }
 
 /// 前端下拉用的提供商预设
@@ -156,6 +214,128 @@ async fn stored_config(store: &Store) -> Result<Option<LlmConfig>> {
     Ok(Some(cfg))
 }
 
+/// 读取落库的多模型目录（不含旧配置合成）
+async fn stored_catalog(store: &Store) -> Result<Option<Catalog>> {
+    let Some(raw) = store.setting(CATALOG_KEY).await? else {
+        return Ok(None);
+    };
+    let Ok(cat) = serde_json::from_str::<Catalog>(&raw) else {
+        return Ok(None);
+    };
+    if cat.entries.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(cat))
+}
+
+/// 生效的模型目录。
+///
+/// 旧版本只有单条 `llm.config`，这里合成一条（`name` 取模型名）返回，**不写库**：
+/// 管理员在界面上保存一次目录后才会真正落成多条目结构。
+pub async fn catalog(store: &Store) -> Result<Catalog> {
+    if let Some(cat) = stored_catalog(store).await? {
+        return Ok(cat);
+    }
+    let Some(cfg) = stored_config(store).await? else {
+        return Ok(Catalog::default());
+    };
+    Ok(Catalog {
+        default: cfg.model.clone(),
+        entries: vec![CatalogEntry {
+            name: cfg.model.clone(),
+            provider: cfg.provider,
+            base_url: cfg.base_url,
+            model: cfg.model,
+            api_key: cfg.api_key,
+        }],
+    })
+}
+
+/// 按名称取整条配置；名称为空或不存在时返回 `None`，由调用方决定回落策略
+pub async fn resolve(store: &Store, name: &str) -> Result<Option<LlmConfig>> {
+    if name.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(catalog(store).await?.find(name).map(CatalogEntry::config))
+}
+
+/// 目录里的默认模型配置；目录为空时返回 `None`
+pub async fn default_config(store: &Store) -> Result<Option<LlmConfig>> {
+    Ok(catalog(store).await?.default_entry().map(CatalogEntry::config))
+}
+
+/// 校验并归一化待保存的目录。
+///
+/// 抽成纯函数是为了能脱离数据库做单测：Key 空串沿用同名旧条目的 Key
+/// （界面上只有掩码，不可能回传明文）。
+fn normalize_catalog(input: Catalog, previous: &Catalog) -> Result<Catalog> {
+    let mut entries: Vec<CatalogEntry> = Vec::with_capacity(input.entries.len());
+    for raw in input.entries {
+        let name = raw.name.trim().to_string();
+        if name.is_empty() {
+            return Err(anyhow!("模型名称不能为空"));
+        }
+        if entries.iter().any(|e| e.name.eq_ignore_ascii_case(&name)) {
+            return Err(anyhow!("模型名称重复：{name}"));
+        }
+        let base = raw.base_url.trim().to_string();
+        if !(base.starts_with("http://") || base.starts_with("https://")) {
+            return Err(anyhow!("「{name}」的 Base URL 必须以 http:// 或 https:// 开头"));
+        }
+        let model = raw.model.trim().to_string();
+        if model.is_empty() {
+            return Err(anyhow!("「{name}」的模型名不能为空"));
+        }
+        let code = {
+            let c = raw.provider.trim().to_ascii_lowercase();
+            if c.is_empty() { "openai".to_string() } else { c }
+        };
+        let needs_key = preset(&code).map(|p| p.needs_key).unwrap_or(true);
+        let key = if raw.api_key.trim().is_empty() {
+            previous.find(&name).map(|e| e.api_key.clone()).unwrap_or_default()
+        } else {
+            raw.api_key.trim().to_string()
+        };
+        if key.is_empty() && needs_key {
+            return Err(anyhow!("「{name}」这个提供商需要 API Key"));
+        }
+        entries.push(CatalogEntry { name, provider: code, base_url: base, model, api_key: key });
+    }
+
+    let want = input.default.trim();
+    let default = if entries.is_empty() {
+        String::new()
+    } else if want.is_empty() {
+        entries[0].name.clone()
+    } else if entries.iter().any(|e| e.name == want) {
+        want.to_string()
+    } else {
+        return Err(anyhow!("默认模型「{want}」不在模型列表中"));
+    };
+
+    Ok(Catalog { default, entries })
+}
+
+/// 保存模型目录（仅管理员）。
+///
+/// 同时把默认条目写回单条 `llm.config`：`effective()` / `probe()` / `list_models()`
+/// 这些按「一份配置」工作的老路径不用改，仍然指向默认模型。
+pub async fn save_catalog(store: &Store, input: Catalog) -> Result<Value> {
+    let previous = catalog(store).await?;
+    let cat = normalize_catalog(input, &previous)?;
+    if cat.is_empty() {
+        store.remove_setting(CATALOG_KEY).await?;
+        store.remove_setting(SETTING_KEY).await?;
+        return describe(store).await;
+    }
+    let default = cat.default_entry().ok_or_else(|| anyhow!("模型列表不能为空"))?;
+    let cfg = serde_json::to_string(&default.config()).context("序列化 LLM 配置失败")?;
+    let raw = serde_json::to_string(&cat).context("序列化模型目录失败")?;
+    store.set_setting(SETTING_KEY, &cfg).await?;
+    store.set_setting(CATALOG_KEY, &raw).await?;
+    describe(store).await
+}
+
 /// 生效配置：数据库优先，其次环境变量
 pub async fn effective(store: &Store) -> Result<Effective> {
     if let Some(config) = stored_config(store).await? {
@@ -210,6 +390,24 @@ pub async fn describe(store: &Store) -> Result<Value> {
         None => (String::new(), String::new(), String::new(), false, String::new()),
     };
 
+    let cat = catalog(store).await?;
+    let default_name = cat.default_entry().map(|e| e.name.clone()).unwrap_or_default();
+    let models: Vec<Value> = cat
+        .entries
+        .iter()
+        .map(|e| {
+            json!({
+                "name": e.name,
+                "provider": e.provider,
+                "base_url": e.base_url,
+                "model": e.model,
+                "has_key": !e.api_key.trim().is_empty(),
+                "key_hint": mask_key(&e.api_key),
+                "is_default": e.name == default_name,
+            })
+        })
+        .collect();
+
     Ok(json!({
         "provider": provider,
         "base_url": base_url,
@@ -219,6 +417,8 @@ pub async fn describe(store: &Store) -> Result<Value> {
         "source": eff.source.code(),
         "mode": if eff.config.is_some() { "llm" } else { "local" },
         "providers": providers,
+        "models": models,
+        "default_model": default_name,
     }))
 }
 
@@ -255,12 +455,26 @@ pub async fn save(
     };
     let raw = serde_json::to_string(&cfg).context("序列化 LLM 配置失败")?;
     store.set_setting(SETTING_KEY, &raw).await?;
+    // 单条保存 = 退回单模型模式：目录同步收敛成这一条，避免两者说法不一致
+    let cat = Catalog {
+        default: cfg.model.clone(),
+        entries: vec![CatalogEntry {
+            name: cfg.model.clone(),
+            provider: cfg.provider.clone(),
+            base_url: cfg.base_url.clone(),
+            model: cfg.model.clone(),
+            api_key: cfg.api_key.clone(),
+        }],
+    };
+    let raw_cat = serde_json::to_string(&cat).context("序列化模型目录失败")?;
+    store.set_setting(CATALOG_KEY, &raw_cat).await?;
     describe(store).await
 }
 
 /// 清除落库配置，回到环境变量 / 本地引擎
 pub async fn clear(store: &Store) -> Result<Value> {
     store.remove_setting(SETTING_KEY).await?;
+    store.remove_setting(CATALOG_KEY).await?;
     describe(store).await
 }
 
@@ -471,5 +685,61 @@ mod tests {
         // 清空后回到 env / none
         clear(&db).await.unwrap();
         assert!(db.setting(SETTING_KEY).await.unwrap().is_none());
+    }
+
+    fn entry(name: &str, model: &str, key: &str) -> CatalogEntry {
+        CatalogEntry {
+            name: name.to_string(),
+            provider: "deepseek".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            model: model.to_string(),
+            api_key: key.to_string(),
+        }
+    }
+
+    #[test]
+    fn normalize_catalog_defaults_to_first_and_keeps_blank_key() {
+        let previous = Catalog {
+            default: "快速版".to_string(),
+            entries: vec![entry("快速版", "deepseek-chat", "sk-old-key-0001")],
+        };
+        // 只改显示名以外的东西、Key 留空：Key 要沿用同名旧条目
+        let input = Catalog {
+            default: String::new(),
+            entries: vec![entry("快速版", "deepseek-chat", ""), entry("深度版", "deepseek-reasoner", "sk-new-key-0002")],
+        };
+        let cat = normalize_catalog(input, &previous).unwrap();
+        assert_eq!(cat.default, "快速版");
+        assert_eq!(cat.entries[0].api_key, "sk-old-key-0001");
+        assert_eq!(cat.entries[1].api_key, "sk-new-key-0002");
+    }
+
+    #[test]
+    fn normalize_catalog_rejects_duplicate_name_and_unknown_default() {
+        let dup = Catalog {
+            default: String::new(),
+            entries: vec![entry("同名", "a", "sk-1-000000"), entry("同名", "b", "sk-2-000000")],
+        };
+        assert!(normalize_catalog(dup, &Catalog::default()).is_err());
+
+        let bad_default = Catalog {
+            default: "不存在的名字".to_string(),
+            entries: vec![entry("快速版", "deepseek-chat", "sk-1-000000")],
+        };
+        assert!(normalize_catalog(bad_default, &Catalog::default()).is_err());
+    }
+
+    #[test]
+    fn catalog_entry_keeps_its_own_endpoint_and_key() {
+        let mut slow = entry("内网 Qwen", "qwen2.5:7b", "sk-local");
+        slow.base_url = "http://10.0.0.9:11434/v1".to_string();
+        let cat = Catalog { default: "快速版".to_string(), entries: vec![entry("快速版", "deepseek-chat", "sk-cloud"), slow] };
+
+        let picked = cat.find("内网 Qwen").unwrap().config();
+        assert_eq!(picked.base_url, "http://10.0.0.9:11434/v1");
+        assert_eq!(picked.api_key, "sk-local");
+        assert_eq!(cat.default_entry().unwrap().name, "快速版");
+        // 名字失效时退默认条目，而不是拼出一个「默认端点 + 别的模型名」的混合配置
+        assert_eq!(cat.default_entry().unwrap().model, "deepseek-chat");
     }
 }

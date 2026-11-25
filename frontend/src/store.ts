@@ -251,10 +251,12 @@ export const session = reactive({
   planLoading: false,
   error: '',
   mode: '',
-  /** 对话页选中的模型；空串表示沿用「模型设置」里存的那个 */
+  /** 对话页选中的模型名；空串表示沿用「模型设置」里的默认模型 */
   model: '',
-  /** 当前端点可选的模型清单，来自 GET /api/agent/models */
+  /** 可选模型名清单，来自 GET /api/agent/models（管理员配置目录时即条目名称） */
   models: [] as string[],
+  /** 管理员设定的默认模型名，用于在下拉里标注 */
+  defaultModel: '',
   modelsLoaded: false,
 })
 
@@ -263,6 +265,7 @@ export async function loadAgentModels(): Promise<void> {
   try {
     const res = await listAgentModels()
     session.models = res.models
+    session.defaultModel = res.default
     // 服务端的 current 已经是「该用户上次选的」；若它被启发式过滤掉，退到第一个可选模型
     if (!session.model || !res.models.includes(session.model)) {
       session.model = res.models.includes(res.current) ? res.current : (res.models[0] ?? '')
@@ -272,6 +275,16 @@ export async function loadAgentModels(): Promise<void> {
     // 端点未实现 /models 或无模型配置时静默降级：下拉为空即不显示
     session.modelsLoaded = true
   }
+}
+
+/**
+ * 模型清单可能过期时强制重拉：管理员刚改过目录、或切换了登录账户。
+ * 已选中的模型名可能已被删除，`loadAgentModels` 会把它纠正到默认模型。
+ */
+export async function reloadAgentModels(): Promise<void> {
+  session.modelsLoaded = false
+  session.model = ''
+  await loadAgentModels()
 }
 
 /** 切换本轮对话使用的模型，并把它记到当前用户头上（跨设备生效） */
