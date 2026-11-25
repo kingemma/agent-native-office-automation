@@ -11,7 +11,7 @@ import { QUICK_GROUPS, TOOL_CATALOG } from '../model'
 import { renderMarkdown } from '../markdown'
 import { json, L } from '../utils'
 import {
-  chooseAgentModel, clearSession, dock, loadAgentModels, loadTools, previewPlan, sendAgent, session,
+  chooseAgentModel, clearSession, dock, loadAgentModels, loadTools, sendAgent, session,
 } from '../store'
 
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
@@ -155,9 +155,6 @@ function onSend(): void {
   draft.value = ''
   void sendAgent(text)
 }
-function onPreview(): void {
-  void previewPlan(draft.value)
-}
 function clearError(): void {
   session.error = ''
 }
@@ -216,17 +213,6 @@ onUnmounted(() => {
       <!-- 对话 -->
       <a-card class="agent-chat" :title="t('agent.chatTitle')">
         <template #extra>
-          <!-- 可选模型来自「模型设置」里配置的端点；只有一个模型时不占位 -->
-          <a-select
-            v-if="session.models.length"
-            :value="session.model"
-            :options="modelOptions"
-            :disabled="session.running"
-            size="small"
-            class="agent-model-select"
-            :title="t('agent.modelHint')"
-            @change="chooseAgentModel"
-          />
           <a-button v-if="!compact" type="text" size="small" @click="dock">
             <Icon name="panel" :size="13" /> {{ t('agent.dock') }}
           </a-button>
@@ -310,6 +296,17 @@ onUnmounted(() => {
             @keydown.enter.exact.prevent="onSend"
           ></textarea>
           <div class="agent-composer-bar">
+            <!-- 可选模型来自「模型设置」里管理员配置的模型目录；只有一条时也显示，方便确认当前用哪个 -->
+            <a-select
+              v-if="session.models.length"
+              :value="session.model"
+              :options="modelOptions"
+              :disabled="session.running"
+              size="small"
+              class="agent-model-select"
+              :title="t('agent.modelHint')"
+              @change="chooseAgentModel"
+            />
             <button
               v-if="voiceSupported" type="button" class="composer-mic"
               :class="{ 'is-on': listening }"
@@ -321,7 +318,6 @@ onUnmounted(() => {
             <span v-if="listening" class="composer-hint">{{ t('agent.voiceListening') }}</span>
             <span v-else-if="voiceError" class="composer-hint is-err">{{ voiceError }}</span>
             <span class="spacer"></span>
-            <a-button :loading="session.planLoading" @click="onPreview">{{ t('agent.previewPlan') }}</a-button>
             <a-button type="primary" :disabled="session.running" @click="onSend">
               <Icon name="send" :size="14" /> {{ session.running ? t('agent.sending') : t('agent.send') }}
             </a-button>
