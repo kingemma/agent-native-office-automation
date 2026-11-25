@@ -3,6 +3,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # 监听端口由 .env 的 POSTGRES_PORT 决定：服务端连接与健康检查都跟随此值
+    command: ["postgres", "-p", "${POSTGRES_PORT:-5432}"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-oa}
       POSTGRES_USER: ${POSTGRES_USER:-oa}
@@ -10,7 +12,7 @@ services:
     volumes:
       - oa-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oa} -d ${POSTGRES_DB:-oa}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oa} -d ${POSTGRES_DB:-oa} -p ${POSTGRES_PORT:-5432}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,10 +26,16 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8787:8787"
+      # 宿主机端口:容器端口，两者都在 .env 中配置
+      - "${OA_HOST_PORT:-8787}:${OA_PORT:-8787}"
     environment:
-      OA_ADDR: 0.0.0.0:8787
-      OA_DB: postgresql://${POSTGRES_USER:-oa}:${POSTGRES_PASSWORD:-oa}@postgres:5432/${POSTGRES_DB:-oa}
+      OA_ADDR: 0.0.0.0:${OA_PORT:-8787}
+      # 连接参数分开传：密码含 @ : / ? # 等字符也无需 URL 编码
+      OA_DB_HOST: postgres
+      OA_DB_PORT: "${POSTGRES_PORT:-5432}"
+      OA_DB_NAME: ${POSTGRES_DB:-oa}
+      OA_DB_USER: ${POSTGRES_USER:-oa}
+      OA_DB_PASSWORD: ${POSTGRES_PASSWORD:-oa}
       OA_FILES: /data/oa-files
       OA_WEB_ROOT: /usr/share/oa/web
       OA_INSTANCE: ${OA_INSTANCE:-docker}

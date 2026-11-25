@@ -9,7 +9,9 @@
 #   3. 注册开机自启的计划任务（SYSTEM 账户、崩溃后自动重启）；
 #   4. 放行入站端口，让局域网客户端能直连；
 #   5. 启动并轮询 /api/health 确认可用。
-# 数据库需事先准备好 Postgres 实例，密码含特殊字符要做 URL 编码。
+# 数据库需事先准备好 Postgres 实例。密码含 @ : / ? # 等字符时不要用 -Database 连接串，
+# 改为预先设置机器级 OA_DB_HOST / OA_DB_PORT / OA_DB_NAME / OA_DB_USER / OA_DB_PASSWORD，
+# 并传 -Database '' 跳过写入 OA_DB（空值按未设置处理，OA_DB 非空时优先级更高）。
 #
 # 为什么用计划任务而不是系统服务：oa-server 是普通控制台程序，没有实现 SCM 接口，
 # 直接 sc create 会因「服务未及时响应启动请求」失败；计划任务零依赖（不需要 NSSM）。
